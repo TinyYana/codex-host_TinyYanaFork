@@ -350,6 +350,18 @@ describe("Renderer fixed Model request client", () => {
     await expect(remote?.listHarnessPlugins?.()).rejects.toThrow();
   });
 
+  it("opens the console through its fixed Host method and validates the address", async () => {
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce({ url: "http://127.0.0.1:26339/" })
+      .mockResolvedValueOnce({ url: "https://example.com/" });
+    const client = createRendererModelClient([{ addNotificationCallback: vi.fn(), sendRequest }]);
+    if (!client?.openConsole) throw new Error("Synthetic Model client cannot open the console");
+    await expect(client.openConsole()).resolves.toEqual({ url: "http://127.0.0.1:26339/" });
+    expect(sendRequest).toHaveBeenCalledWith("codexhost/console/open", {});
+    await expect(client.openConsole()).rejects.toThrow();
+  });
+
   it("calls only the fixed inspect and select methods with validated params", async () => {
     let usageNotification: ((notification: unknown) => void) | undefined;
     const removeUsageNotification = vi.fn();
@@ -430,6 +442,7 @@ describe("Renderer fixed Model request client", () => {
       "deleteCodexAccount",
       "executeThreadCommand",
       "forkThread",
+      "getHarnessDisplaySettings",
       "getHarnessLaunchSettings",
       "importHarnessSession",
       "inspectCodexAccountRanking",
@@ -448,6 +461,7 @@ describe("Renderer fixed Model request client", () => {
       "listLoadedSessions",
       "listSessionImportSources",
       "listThreadOwnership",
+      "openConsole",
       "openHarnessWebUi",
       "readUpdateStatus",
       "recoverCodexAccounts",
@@ -456,6 +470,7 @@ describe("Renderer fixed Model request client", () => {
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",
+      "setHarnessDisplaySettings",
       "setHarnessLaunchSettings",
       "setIdleReleaseSettings",
       "startCodexLogin",

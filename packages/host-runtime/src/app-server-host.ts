@@ -1,3 +1,10 @@
+import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
+import {
+  isConsoleHostMethod,
+  CONSOLE_OPEN_METHOD,
+  consoleOpenParamsSchema,
+  consoleOpenResultSchema,
+} from "@codexhost/shared-contracts";
 import {
   DELEGATION_MENTION_PATH_PREFIX,
   IDLE_RELEASE_SETTINGS_METHOD,
@@ -10,6 +17,13 @@ import {
   credentialImportsParamsSchema,
 } from "@codexhost/shared-contracts";
 import { handleCredentialImports } from "./credential-imports.js";
+import { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
+import {
+  HARNESS_DISPLAY_GET_METHOD,
+  HARNESS_DISPLAY_SET_METHOD,
+  harnessDisplayGetSchema,
+  harnessDisplaySetSchema,
+} from "@codexhost/shared-contracts";
 import {
   rewriteDelegationMentionInput,
   rewriteDelegationMentionText,
@@ -91,6 +105,7 @@ import {
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
   type HostInteractionId,
+  type HostItemId,
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 import { executeExternalThreadFork } from "./external-thread-fork.js";
@@ -143,7 +158,6 @@ import {
 } from "./delegation-types.js";
 import { HarnessDelegationCoordinator } from "./harness-delegation-coordinator.js";
 import { loadHarnessPlugins } from "./harness-plugin-loader.js";
-import { HarnessLaunchSettingsStore } from "./harness-launch-settings.js";
 import {
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
@@ -193,6 +207,11 @@ import {
   OfficialRuntimeScope,
 } from "./codex-runtime/official-runtime-scope.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
+import type { HostConsoleOpener } from "./console-opener.js";
+
+const CONSOLE_REQUEST_TIMEOUT_MS = 120_000;
+
+export type ConsoleHostReply = { result: JsonValue } | { error: { code: number; message: string } };
 
 const SUBAGENT_TERMINAL_REFRESH_DELAYS_MS = [0, 50, 100, 150] as const;
 const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
@@ -281,6 +300,8 @@ export interface AppServerHostOptions {
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
   onRequestRoute?: (observation: RequestRouteObservation) => void;
   updateCoordinator?: HostUpdateCoordinator;
+  /** Present only on the local Host started by the Launcher. */
+  consoleOpener?: HostConsoleOpener;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
 }
 
@@ -341,6 +362,23 @@ function projectAccountCredits(value: unknown): AccountCreditsSnapshot | null {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Codex app-server reports an unknown Thread with these messages. Any other
+ * error from a Thread read is a failure to read, not proof that it is missing.
+ */
+const OFFICIAL_THREAD_MISSING =
+  /no rollout found for thread id|thread not found|invalid thread id/i;
+
+function officialThreadReadError(error: Record<string, unknown>): DelegationControlError {
+  const message = typeof error.message === "string" ? error.message : "";
+  return OFFICIAL_THREAD_MISSING.test(message)
+    ? new DelegationControlError("THREAD_NOT_FOUND", message || "Official Thread was not found")
+    : new DelegationControlError(
+        "INTERNAL_ERROR",
+        message ? `Official Thread read failed: ${message}` : "Official Thread read failed",
+      );
 }
 
 export function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -539,13 +577,18 @@ function turnProjectionGate(): TurnProjectionGate {
 class OrderedWriter {
   #tail = Promise.resolve();
 
-  constructor(private readonly stream: Writable) {}
+  constructor(
+    private readonly stream: Writable,
+    /** Returns true for a message it consumed instead of the stream. */
+    private readonly intercept: (value: JsonValue) => boolean = () => false,
+  ) {}
 
   frame(frame: Buffer<ArrayBufferLike>): Promise<void> {
     return this.#enqueue(() => writeFrame(this.stream, frame));
   }
 
   json(value: JsonValue): Promise<void> {
+    if (this.intercept(value)) return Promise.resolve();
     return this.#enqueue(() => writeJsonFrame(this.stream, value));
   }
 
@@ -595,6 +638,10 @@ export class AppServerHost {
   #officialServerRequests = new Map<JsonRpcId, JsonRpcId>();
   #nextOfficialServerRequestId = 0;
   #writer: OrderedWriter;
+  /** Console requests share Desktop handling; their replies return to the console. */
+  readonly #consoleRequestPrefix = `codexhost-console:${randomUUID()}:`;
+  readonly #consoleReplies = new Map<string, (message: JsonValue) => void>();
+  #nextConsoleRequest = 0;
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
   #pendingExternalCommandRequests = new Set<string>();
@@ -612,7 +659,9 @@ export class AppServerHost {
       diagnosticOutput: process.stderr,
       ...options,
     };
-    this.#writer = new OrderedWriter(this.#options.desktopOutput);
+    this.#writer = new OrderedWriter(this.#options.desktopOutput, (value) =>
+      this.#takeConsoleReply(value),
+    );
     const environment = this.#options.environment ?? process.env;
     this.#launchSettings = new HarnessLaunchSettingsStore(
       this.#options.pluginContext?.environment ?? environment,
@@ -737,6 +786,7 @@ export class AppServerHost {
         },
         canRelease: (thread) =>
           !this.#hasRunningSubagents(thread.id) &&
+          !thread.session.hasBackgroundWork?.() &&
           !this.#externalSteering.hasPending(thread.id) &&
           !this.#pendingExternalCommandRequests.has(thread.id) &&
           ![...this.#pendingDesktopApprovals.values()].some(
@@ -762,6 +812,7 @@ export class AppServerHost {
       listOfficial: (input) => this.#listDelegationThreads(input),
       officialThreadCwd: (threadId) => this.#readOfficialThreadCwd(threadId),
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
+      externalThreadBusy: (thread) => this.#externalThreadBusy(thread),
     });
     const unregisterDelegationApi = options.onDelegationApi?.({
       listHarnesses: () =>
@@ -972,6 +1023,67 @@ export class AppServerHost {
     this.#signalActiveWorkChanged();
   }
 
+  #takeConsoleReply(value: JsonValue): boolean {
+    if (!isRecord(value) || typeof value.id !== "string") return false;
+    const reply = this.#consoleReplies.get(value.id);
+    if (!reply) return false;
+    this.#consoleReplies.delete(value.id);
+    reply(value);
+    return true;
+  }
+
+  /**
+   * Runs one console request through the same handling as Codex Desktop's
+   * settings requests. Only {@link CONSOLE_HOST_METHODS} are accepted.
+   */
+  async handleConsoleRequest(
+    method: string,
+    params: unknown,
+    timeoutMs = CONSOLE_REQUEST_TIMEOUT_MS,
+  ): Promise<ConsoleHostReply> {
+    if (!isConsoleHostMethod(method)) {
+      return { error: { code: -32601, message: `${method} is not available to the console` } };
+    }
+    if (this.#closeRequested || this.#desktopInputEnded) {
+      return { error: { code: -32090, message: "Codex Desktop is closing" } };
+    }
+    const parsed = jsonRpcRequestSchema.safeParse({
+      id: `${this.#consoleRequestPrefix}${++this.#nextConsoleRequest}`,
+      method,
+      params: params ?? {},
+    });
+    if (!parsed.success) return { error: { code: -32602, message: "Invalid console request" } };
+    const request = parsed.data;
+    const id = String(request.id);
+    let timer: NodeJS.Timeout | undefined;
+    const reply = new Promise<JsonValue>((resolve) => {
+      this.#consoleReplies.set(id, resolve);
+      timer = setTimeout(
+        () => resolve({ id, error: { code: -32093, message: "The Host did not answer in time" } }),
+        timeoutMs,
+      );
+    });
+    this.#dispatchDesktopRequest(() =>
+      this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request))),
+    );
+    try {
+      const message = await reply;
+      if (isRecord(message) && "result" in message) {
+        return { result: (message.result ?? null) as JsonValue };
+      }
+      const error = isRecord(message) && isRecord(message.error) ? message.error : undefined;
+      return {
+        error: {
+          code: typeof error?.code === "number" ? error.code : -32603,
+          message: typeof error?.message === "string" ? error.message : "Host request failed",
+        },
+      };
+    } finally {
+      clearTimeout(timer);
+      this.#consoleReplies.delete(id);
+    }
+  }
+
   #forgetPendingOfficialTurnStarts(threadId: string): void {
     for (const [requestId, pendingThreadId] of this.#pendingOfficialTurnStarts) {
       if (pendingThreadId === threadId) this.#pendingOfficialTurnStarts.delete(requestId);
@@ -1035,6 +1147,33 @@ export class AppServerHost {
     frame: Buffer<ArrayBufferLike>,
   ): Promise<void> {
     if (this.#closeRequested) return;
+    if (
+      request.method === HARNESS_DISPLAY_GET_METHOD ||
+      request.method === HARNESS_DISPLAY_SET_METHOD
+    ) {
+      const parsed = (
+        request.method === HARNESS_DISPLAY_SET_METHOD
+          ? harnessDisplaySetSchema
+          : harnessDisplayGetSchema
+      ).safeParse(request.params ?? {});
+      if (!parsed.success) {
+        await this.#writer.json(rpcError(request, -32602, "Invalid Harness display settings"));
+        return;
+      }
+      try {
+        const store = new HarnessDisplaySettingsStore(this.#options.environment ?? process.env);
+        const result =
+          request.method === HARNESS_DISPLAY_SET_METHOD
+            ? await store.set(harnessDisplaySetSchema.parse(parsed.data))
+            : await store.get();
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch {
+        await this.#writer.json(
+          rpcError(request, -32000, "Could not save or read Harness display settings"),
+        );
+      }
+      return;
+    }
     if (request.method === LOADED_SESSIONS_METHOD) {
       await this.#writer.json(
         rpcEnvelope(request, { result: this.#externalRuntime.idleRelease.list() }),
@@ -1057,6 +1196,10 @@ export class AppServerHost {
       request.method === "codexhost/update/status"
     ) {
       this.#dispatchDesktopRequest(() => this.#handleUpdateRequest(request));
+      return;
+    }
+    if (request.method === CONSOLE_OPEN_METHOD) {
+      this.#dispatchDesktopRequest(() => this.#handleConsoleOpen(request));
       return;
     }
     if (CODEX_ACCOUNT_METHODS.has(request.method)) {
@@ -1622,6 +1765,18 @@ export class AppServerHost {
       }
     }
     if (
+      request.method === "thread/backgroundTerminals/clean" &&
+      isRecord(request.params) &&
+      typeof request.params.threadId === "string"
+    ) {
+      const location = await this.#locateExternalThread(request.params.threadId);
+      if (await this.#writeResolutionError(request, location)) return;
+      if (location.kind === "external") {
+        await this.#cleanExternalBackgroundTerminals(request, request.params.threadId);
+        return;
+      }
+    }
+    if (
       request.method.startsWith("thread/") &&
       !EXPLICIT_EXTERNAL_THREAD_METHODS.has(request.method) &&
       isRecord(request.params) &&
@@ -2121,8 +2276,9 @@ export class AppServerHost {
       threadId: input.threadId,
       includeTurns: true,
     });
-    if (isRecord(current.error) || !isRecord(current.result)) {
-      throw new DelegationControlError("THREAD_NOT_FOUND", "Official Thread was not found");
+    if (isRecord(current.error)) throw officialThreadReadError(current.error);
+    if (!isRecord(current.result)) {
+      throw new DelegationControlError("INTERNAL_ERROR", "Official Thread read returned no result");
     }
     const currentThread = isRecord(current.result.thread) ? current.result.thread : null;
     if (officialThreadBusy(currentThread)) {
@@ -2140,6 +2296,7 @@ export class AppServerHost {
         isRecord(resumed.error) && typeof resumed.error.message === "string"
           ? resumed.error.message
           : "Official Thread resume failed",
+        { notStarted: true },
       );
     }
     const resumedThread = isRecord(resumed.result.thread) ? resumed.result.thread : null;
@@ -2147,6 +2304,7 @@ export class AppServerHost {
       throw new DelegationControlError(
         "DELEGATION_FAILED",
         "Official Thread resume did not return the requested Thread",
+        { notStarted: true },
       );
     }
     if (officialThreadBusy(resumedThread)) {
@@ -2156,6 +2314,7 @@ export class AppServerHost {
       throw new DelegationControlError(
         "DELEGATION_FAILED",
         "Official Thread is not idle after resume",
+        { notStarted: true },
       );
     }
     const response = await this.#requestOfficial("turn/start", {
@@ -2163,9 +2322,11 @@ export class AppServerHost {
       input: [{ type: "text", text: input.message }],
     });
     if (isRecord(response.error)) {
+      // app-server answered turn/start with an error, so no Turn was started.
       throw new DelegationControlError(
         "DELEGATION_FAILED",
         typeof response.error.message === "string" ? response.error.message : "Turn start failed",
+        { notStarted: true },
       );
     }
     const result = isRecord(response.result) ? response.result : null;
@@ -2228,18 +2389,11 @@ export class AppServerHost {
       threadId: input.threadId,
       includeTurns: true,
     });
-    if (isRecord(response.error)) {
-      throw new DelegationControlError(
-        "THREAD_NOT_FOUND",
-        typeof response.error.message === "string"
-          ? response.error.message
-          : "Official Thread was not found",
-      );
-    }
+    if (isRecord(response.error)) throw officialThreadReadError(response.error);
     const result = isRecord(response.result) ? response.result : null;
     const thread = result && isRecord(result.thread) ? result.thread : null;
     if (!thread)
-      throw new DelegationControlError("THREAD_NOT_FOUND", "Official Thread was not found");
+      throw new DelegationControlError("INTERNAL_ERROR", "Official Thread read returned no Thread");
     const turns = Array.isArray(thread.turns)
       ? thread.turns.filter((turn): turn is JsonObject => isRecord(turn))
       : [];
@@ -2397,6 +2551,26 @@ export class AppServerHost {
       method: archived ? "thread/archived" : "thread/unarchived",
       params: { threadId: record.hostThreadId },
     });
+  }
+
+  async #handleConsoleOpen(request: JsonRpcRequest): Promise<void> {
+    if (!consoleOpenParamsSchema.safeParse(request.params ?? {}).success) {
+      await this.#writer.json(rpcError(request, -32602, "Console params must be empty"));
+      return;
+    }
+    const opener = this.#options.consoleOpener;
+    if (!opener) {
+      await this.#writer.json(
+        rpcError(request, -32090, "The codexhost console is available on the local Host only"),
+      );
+      return;
+    }
+    try {
+      const result = consoleOpenResultSchema.parse(await opener.open());
+      await this.#writer.json(rpcEnvelope(request, { result }));
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32092, errorMessage(error).slice(0, 500)));
+    }
   }
 
   async #handleUpdateRequest(request: JsonRpcRequest): Promise<void> {
@@ -2766,11 +2940,7 @@ export class AppServerHost {
     thread: ExternalThread,
     params: ReturnType<typeof threadCommandExecuteParamsSchema.parse>,
   ): Promise<void> {
-    if (
-      thread.running ||
-      this.#externalSteering.hasPending(thread.id) ||
-      this.#pendingExternalCommandRequests.has(thread.id)
-    ) {
+    if (this.#externalThreadBusy(thread) || this.#pendingExternalCommandRequests.has(thread.id)) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active operation"),
       );
@@ -4082,9 +4252,36 @@ export class AppServerHost {
   }
 
   #externalHistoryTurns(thread: ExternalThread): JsonObject[] {
-    if (!thread.activeTurnId) return thread.turns;
+    const turns = this.#withOpenBackgroundCommands(thread, thread.turns);
+    if (!thread.activeTurnId) return turns;
     const active = thread.projectedTurns.get(thread.activeTurnId);
-    return active ? [...thread.turns, active.projector.pendingTurn()] : thread.turns;
+    return active ? [...turns, active.projector.pendingTurn()] : turns;
+  }
+
+  /**
+   * Background commands whose native task has not settled overlay their live
+   * wire state (`inProgress`, accumulated output) onto the served history Turn
+   * they detached from, replacing the historical Item or appending to the Turn.
+   */
+  #withOpenBackgroundCommands(thread: ExternalThread, turns: JsonObject[]): JsonObject[] {
+    return turns.map((turn) => {
+      const open = thread.projectedTurns
+        .get((turn as { id: HostTurnId }).id)
+        ?.projector.openDetachedWireItems();
+      if (!open || open.size === 0) return turn;
+      const remaining = new Map(open);
+      const items = (turn as { items: JsonObject[] }).items.map((item) => {
+        const id = (item as { id: HostItemId }).id;
+        const live = remaining.get(id);
+        if (!live) return item;
+        remaining.delete(id);
+        return live;
+      });
+      return {
+        ...turn,
+        items: [...items, ...remaining.values()],
+      };
+    });
   }
 
   async #startDelegatedExternalTurn(
@@ -4092,7 +4289,7 @@ export class AppServerHost {
     text: string,
     requestedTurnId: string,
   ): Promise<void> {
-    if (thread.running || this.#externalSteering.hasPending(thread.id)) {
+    if (this.#externalThreadBusy(thread)) {
       throw new Error("External Thread already has an active Turn");
     }
     const turnId = hostTurnIdSchema.parse(requestedTurnId);
@@ -4129,11 +4326,7 @@ export class AppServerHost {
   }
 
   async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
-    if (
-      thread.running ||
-      this.#externalSteering.hasPending(thread.id) ||
-      this.#pendingExternalCommandRequests.has(thread.id)
-    ) {
+    if (this.#externalThreadBusy(thread) || this.#pendingExternalCommandRequests.has(thread.id)) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active Turn"),
       );
@@ -4321,6 +4514,38 @@ export class AppServerHost {
       this.#signalActiveWorkChanged();
       throw error;
     }
+  }
+
+  /**
+   * Desktop's "stop all background terminals". An unloaded Thread has no
+   * Session and therefore no background terminals; a loaded Harness that
+   * cannot stop them, or a failed stop, is an error rather than success.
+   */
+  async #cleanExternalBackgroundTerminals(
+    request: JsonRpcRequest,
+    threadId: string,
+  ): Promise<void> {
+    const thread = this.#externalRuntime.get(threadId);
+    if (!thread) {
+      await this.#writer.json(rpcEnvelope(request, { result: {} }));
+      return;
+    }
+    if (!thread.session.stopBackgroundWork) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          -32076,
+          "External Harness does not support stopping background terminals",
+        ),
+      );
+      return;
+    }
+    const result = await thread.session.stopBackgroundWork();
+    if (!result.ok) {
+      await this.#writer.json(rpcError(request, -32083, result.error.message));
+      return;
+    }
+    await this.#writer.json(rpcEnvelope(request, { result: {} }));
   }
 
   async #interruptExternalTurn(
@@ -4599,7 +4824,8 @@ export class AppServerHost {
       thread.historyHydrated = false;
       thread.running = false;
       thread.activeTurnId = null;
-      thread.projectedTurns.delete(event.turnId);
+      // Detached Items (native background commands) settle on this Turn later.
+      if (!projection.projector.hasOpenDetachedItems) thread.projectedTurns.delete(event.turnId);
       thread.responseGates.delete(event.turnId);
       this.#signalActiveWorkChanged();
       const delegation = await this.#repository.getDelegationByChild(thread.record.hostThreadId);
@@ -4612,6 +4838,13 @@ export class AppServerHost {
               : "completed";
         await this.#repository.setDelegationStatus(delegation.delegationId, status);
       }
+    }
+    if (
+      event.type === "item.completed" &&
+      projection.projector.completed &&
+      !projection.projector.hasOpenDetachedItems
+    ) {
+      thread.projectedTurns.delete(event.turnId);
     }
     for (const message of result.messages) await this.#writer.json(message);
     if (event.type === "turn.completed") {
