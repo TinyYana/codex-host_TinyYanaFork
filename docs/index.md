@@ -25,6 +25,7 @@
 | [`architecture/external-thread-steering.md`](architecture/external-thread-steering.md) | 外部 Thread 取消旧 Turn 后启动新 Turn 的“调整方向”语义；修改 steering 时阅读。 |
 | [`architecture/thread-watch.md`](architecture/thread-watch.md) | 一次性 Thread 停下通知（`thread watch`）的模型、结果、送达与边界；修改委派跟进或通知时阅读。 |
 | [`architecture/app-server-transport.md`](architecture/app-server-transport.md) | 原生大历史响应的 WebSocket 与 JSONL 传输边界；排查任务加载、消息大小和转发性能时阅读。 |
+| [`architecture/turn-activity-folding.md`](architecture/turn-activity-folding.md) | 回合完成后过程折叠的 Desktop 条件与 `final_answer` 推断规则；修改 Agent 消息阶段投影或排查过程无法收起时阅读。 |
 | [`architecture/acp-layer-follow-up.md`](architecture/acp-layer-follow-up.md) | 共享 ACP 层的抽取条件与边界；出现第二个适合共享实现的生产 ACP Harness 时阅读。 |
 
 ## Harness 专项
@@ -77,6 +78,7 @@
 | [`harnesses/opencode/opencode-edit-recovery.md`](harnesses/opencode/opencode-edit-recovery.md) | OpenCode 原生 Fork 编辑恢复和取消终态语义；修改编辑或取消时阅读。 |
 | [`harnesses/pi/pi-edit-recovery.md`](harnesses/pi/pi-edit-recovery.md) | Pi 空历史编辑、原生文件发布和生命周期 Gate；修改 Pi 恢复时阅读。 |
 | [`harnesses/pi/pi-subagents.md`](harnesses/pi/pi-subagents.md) | Pi 的 pi-subagents 异步状态、同步 workflow 子任务、记录读取与适配边界。 |
+| [`harnesses/pi/pi-fast.md`](harnesses/pi/pi-fast.md) | Pi Codex Fast 闪电开关、别名 Provider 能力判定、自动加载和 priority 请求边界。 |
 
 ### OMP
 
@@ -98,7 +100,7 @@
 | [`product/codex-managed-accounts.md`](product/codex-managed-accounts.md) | Codex 多帳號保存、受控切換交易、統一額度、Quota Ranker、Auto 與 Switch & Retry、migration；修改帳號管理、切換或額度 Ranking 時閱讀。 |
 | [`product/codex-native-account-switching-design.md`](product/codex-native-account-switching-design.md) | Codex 帳號切換的設計邊界與歷史脈絡；修改 Codex 認證或帳號路由時閱讀。 |
 | [`architecture/renderer-settings-styling.md`](architecture/renderer-settings-styling.md) | 设置页 Tailwind CSS 使用边界、构建方式与编写规则；新增或改版设置页界面时阅读。 |
-| [`operations/codex-desktop-upgrade-diagnosis-playbook.md`](operations/codex-desktop-upgrade-diagnosis-playbook.md) | Desktop 更新后 Renderer、Bridge、Agent 和 Model 异常的诊断流程；升级兼容性回归时阅读。 |
+| [`operations/codex-desktop-upgrade-diagnosis-playbook.md`](operations/codex-desktop-upgrade-diagnosis-playbook.md) | Desktop 更新后 Renderer、Bridge、Agent 和 Model 异常，以及输入性能的诊断流程；兼容性与交互性能回归时阅读。 |
 
 ## 平台、进程与远程运行
 
@@ -120,7 +122,8 @@
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`operations/host-runtime-log.md`](operations/host-runtime-log.md) | Host Runtime 日志文件的位置、内容与边界；排查 Runtime 崩溃或异常退出时阅读。 |
-| [`operations/codexhost-console.md`](operations/codexhost-console.md) | 本地控制台的打开方式、页面、与运行中 Host 的连接、端口、诊断文件、安全与更新边界；排查启动失败或 Codex 更新后功能缺失时阅读。 |
+| [`operations/codexhost-console.md`](operations/codexhost-console.md) | 本地控制台的打开方式、页面、项目公告、与运行中 Host 的连接、端口、诊断文件、安全与更新边界；排查启动失败或维护 Web 公告时阅读。 |
+| [`NOTICE.md`](NOTICE.md) | Web 控制台打开或刷新时读取的项目公告，含显示开关、标题、类型与正文；默认关闭，发布规则见控制台文档。 |
 | [`operations/repository-maintenance.md`](operations/repository-maintenance.md) | PR 标签、CI 评论和发布前检查自动化；修改仓库自动化时阅读。 |
 
 ## 待评估方案与问题调查

@@ -41,7 +41,10 @@ const { outputFiles } = await build({
         // Mutations answer only when the test releases them, so pending UI is observable.
         let releaseSwitch = () => {};
         const changed = () => { revision += 1; return accountSnapshot(); };
-        let harnessAccounts = [
+        let harnessAccounts = scenario === "balance" ? [
+          {harnessId:"pi",harnessName:"Pi",label:"qingge",balance:{amount:4,currency:"USD",label:"钱包余额"}},
+          {harnessId:"pi",harnessName:"Pi",label:"DeepSeek",balance:{amount:12.5,currency:"CNY",label:"DeepSeek API"}},
+        ] : [
           {harnessId:"grok",harnessName:"Grok Build",email:"grok@example.com",credits:{usedPercent:0,periodType:"weekly",resetsAt:"2026-09-17T03:32:00Z"}},
           {harnessId:"antigravity",harnessName:"Antigravity",credits:{label:"Gemini Models · Weekly window",usedPercent:10,periodType:"weekly"}},
           {harnessId:"claude-code",harnessName:"Claude Code",email:"claude@example.com",plan:"max",credits:{usedPercent:0,periodType:"five_hour",productUsage:[{product:"7-day window",usagePercent:50}]}},
@@ -60,7 +63,7 @@ const { outputFiles } = await build({
             if (request.action === "remove") imported = imported.filter(r=>r.name!==request.name);
             return {sources,targets:[{harnessId:"pi",providers:["openai-codex","xai"],imports:imported,others:[{provider:"anthropic",type:"oauth"},{provider:"codex1",type:"oauth",label:"same@example.com",vendor:"openai-codex"},{provider:"openai-codex",type:"api_key"}]}]};
           },
-          ...(scenario === "external" ? {listHarnessAccounts: async () => ({accounts:harnessAccounts})} : {}),
+          ...(["external", "balance"].includes(scenario) ? {listHarnessAccounts: async () => ({accounts:harnessAccounts})} : {}),
           listCodexAccounts: async () => accountSnapshot(),
           refreshCodexAccounts: async () => accountSnapshot(),
           ...(managed ? {
@@ -173,6 +176,26 @@ test("shows detected Harness quota read-only and removes rows when authenticatio
   await page.locator(".settings-account-toolbar").getByRole("button", { name: "刷新额度" }).click();
   await expect(nativeAccounts).toHaveCount(0);
   await expect(page.locator(".settings-account-count")).toHaveText("账号1");
+});
+
+test("shows each prepaid Billing Source without inventing quota percentages", async ({
+  page,
+}, testInfo) => {
+  await setup(page, { scenario: "balance" });
+  const piRows = page.locator('.settings-account-table tr[data-harness-id="pi"]');
+  await expect(piRows).toHaveCount(2);
+  await expect(piRows.filter({ hasText: "qingge" })).toContainText("USD 4.00");
+  await expect(piRows.filter({ hasText: "DeepSeek" })).toContainText("CNY 12.50");
+  await expect(piRows.getByRole("meter")).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("accounts-balance-wide.png") });
+  await page.setViewportSize({ width: 700, height: 900 });
+  for (const cell of await piRows.locator(".settings-account-balance-cell").all()) {
+    await expect(cell).toBeVisible();
+    const box = await cell.boundingBox();
+    if (!box) throw new Error("Balance cell has no visible bounds");
+    expect(box.x + box.width).toBeLessThanOrEqual(700);
+  }
+  await page.screenshot({ path: testInfo.outputPath("accounts-balance-narrow.png") });
 });
 
 test("shows current Codex quota, reset-credit count, and no Host consume or login actions", async ({
