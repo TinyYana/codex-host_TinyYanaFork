@@ -523,7 +523,7 @@ export function renderRendererCreditsControl(
   /** Codex Account identity and switching; null everywhere else and on read-only Hosts. */
   accountSwitch: RendererCodexAccountSwitchView | null = null,
 ): boolean {
-  if (accountCredits === null && accountSwitch === null) {
+  if ((accountCredits === null && accountSwitch === null) || !control.anchor?.parentElement) {
     control.root.style.display = "none";
     control.announcedOfferKey = null;
     closePopover(control);

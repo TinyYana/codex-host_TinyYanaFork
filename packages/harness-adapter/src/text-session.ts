@@ -1,5 +1,6 @@
 import type {
   HarnessAccountSnapshot,
+  HarnessInstallationState,
   HarnessCommandCatalog,
   HarnessId,
   HarnessInspection,
@@ -306,7 +307,11 @@ export interface HostAgentMessageItem {
   type: "agentMessage";
   itemId: HostItemId;
   text: string;
-  /** Omit when the Harness cannot distinguish progress from its final answer. */
+  /**
+   * Omit when the Harness cannot distinguish progress from its final answer; the
+   * Host then treats the message that ends a succeeded Turn as its final answer.
+   * Set `commentary` to keep such a message out of that inference.
+   */
   phase?: "commentary" | "final_answer";
 }
 
@@ -608,6 +613,10 @@ export interface HarnessSessionImportCapability {
 }
 
 export interface HarnessAdapter {
+  /** Native CLI version checks and explicit updates. Never updates the Host plugin,
+   * starts a model Turn, or restarts existing Sessions. Commands are Adapter-owned.
+   */
+  installation?(action: "check" | "update"): Promise<HarnessInstallationState>;
   readonly credentialExport?: HarnessCredentialExport;
   readonly credentialImports?: HarnessCredentialImports;
   readonly harnessId: HarnessId;
@@ -627,6 +636,11 @@ export interface HarnessAdapter {
    * Implementations must bound requests and release inspection resources on close.
    */
   inspectAccount?(): Promise<HarnessAccountSnapshot | null>;
+  /**
+   * The same read when one Harness exposes several Billing Sources. Host prefers
+   * this method and retains the first snapshot as the compatibility `account`.
+   */
+  inspectAccounts?(): Promise<readonly HarnessAccountSnapshot[]>;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
   open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>>;

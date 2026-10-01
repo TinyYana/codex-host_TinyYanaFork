@@ -16,6 +16,7 @@ import { startDelegationControlServer } from "./delegation-control-server.js";
 import { installDelegationSkills } from "./delegation-skill.js";
 import type { DelegationControlRegistration } from "./delegation-types.js";
 import {
+  DELEGATION_CLI_NODE_PATH_ENV,
   DELEGATION_CLI_PATH_ENV,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
   DELEGATION_RUNTIME_TOKEN_ENV,
@@ -33,6 +34,7 @@ import {
   remoteAppServerSocketPath,
   remoteUnixListenerUrl,
 } from "./remote-app-server.js";
+import { watchRemoteListenerSupervisor } from "./remote-listener-supervisor.js";
 import { remoteOfficialAppServerSocketPath } from "./remote-official-app-server.js";
 import { startConsoleControlServer } from "./console-control-server.js";
 import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
@@ -82,8 +84,18 @@ function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
   return { stockCodexPath, defaultAgent };
 }
 
-function delegationCliPath(environment: NodeJS.ProcessEnv): string | undefined {
-  return environment[DELEGATION_CLI_PATH_ENV] ?? environment.CODEXHOST_LAUNCHER_EXECUTABLE;
+/**
+ * The CLI stays the native Launcher. npm packages ship no Node, so the Launcher
+ * runs the delegation CLI with the Node that started this npm installation.
+ */
+export function delegationCliEnvironment(environment: NodeJS.ProcessEnv): Record<string, string> {
+  const cliPath =
+    environment[DELEGATION_CLI_PATH_ENV] ?? environment[UPDATE_RUNTIME_ENV.launcherExecutable];
+  const nodePath = environment[UPDATE_RUNTIME_ENV.npmNodePath];
+  return {
+    ...(cliPath ? { [DELEGATION_CLI_PATH_ENV]: cliPath } : {}),
+    ...(nodePath && path.isAbsolute(nodePath) ? { [DELEGATION_CLI_NODE_PATH_ENV]: nodePath } : {}),
+  };
 }
 
 async function prepareDelegationRuntime(input: {
@@ -102,10 +114,9 @@ async function prepareDelegationRuntime(input: {
   });
   const token = randomBytes(32).toString("hex");
   const server = await startDelegationControlServer({ token, api: registry, watchApi: registry });
-  const cliPath = delegationCliPath(input.environment);
   const environment = {
     ...input.environment,
-    ...(cliPath ? { [DELEGATION_CLI_PATH_ENV]: cliPath } : {}),
+    ...delegationCliEnvironment(input.environment),
     [DELEGATION_RUNTIME_ENDPOINT_ENV]: server.endpoint,
     [DELEGATION_RUNTIME_TOKEN_ENV]: token,
   };
@@ -297,6 +308,9 @@ export async function runHostRuntime(input: {
           delegationEnvironment.CODEX_HOME ?? path.join(homedir(), ".codex"),
         ),
         diagnosticOutput: process.stderr,
+        // The listener outlives Desktop connections and Shim reuses it on
+        // reconnect, so a failed official generation must be replaced here.
+        recovery: {},
         createBackend: () =>
           createOwnedUnixBackend({
             stockCodexPath,
@@ -338,29 +352,42 @@ export async function runHostRuntime(input: {
         },
       });
 
-      let stopping = false;
-      const officialState: { unexpectedExit: Error | null } = { unexpectedExit: null };
       const stop = (): void => {
-        stopping = true;
         void listener.close();
       };
+      // Desktop's reconnect cleanup can kill the Shim supervisor and stock Codex
+      // while this retitled listener survives. An unsupervised listener must
+      // close normally and release its socket instead of lingering or crashing
+      // on its closed diagnostic pipes.
+      let supervisorLost = false;
+      const supervisor = watchRemoteListenerSupervisor({
+        onLost: (reason) => {
+          supervisorLost = true;
+          process.stderr.write(`codexhost: remote listener ${reason}; closing\n`);
+          stop();
+        },
+        // Shim always spawns this listener as its child, so an init parent at
+        // startup means the supervisor is already gone.
+        supervisorRequired: true,
+      });
       try {
         await prepareRemoteAppServerSocketDirectory(socketPath);
+        // Also covers a loss reported while the directory was being prepared.
+        if (supervisorLost) return 0;
+        // Native Codex failure never closes this listener: external Harness
+        // sessions stay alive while the Scope restarts the official generation.
         await officialRuntimeScope.start().catch(() => {
           officialRuntimeScope.gate.unavailable();
         });
+        if (supervisorLost) return 0;
         await listener.listen();
-        void officialRuntimeScope.failure().then((result) => {
-          if (!stopping) officialState.unexpectedExit = result;
-          // Keep remote external Harness sessions alive when only native Codex fails.
-        });
         process.title = MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE;
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
         await listener.closed;
-        return officialState.unexpectedExit ? 1 : 0;
+        return 0;
       } finally {
-        stopping = true;
+        supervisor.close();
         process.removeListener("SIGINT", stop);
         process.removeListener("SIGTERM", stop);
         try {

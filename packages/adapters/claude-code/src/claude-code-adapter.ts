@@ -98,7 +98,9 @@ import {
   normalizeClaudeModelCatalog,
 } from "./model-catalog.js";
 import {
+  CLAUDE_BYPASS_PERMISSIONS_UNAVAILABLE_MESSAGE,
   CLAUDE_DEFAULT_PERMISSION_MODE_ID,
+  claudeBypassPermissionsAvailable,
   claudePermissionModeCatalogForModels,
   decodeClaudePermissionModeId,
   encodeClaudePermissionModeId,
@@ -448,6 +450,44 @@ function faultError(): HarnessError {
   };
 }
 
+/** Keeps actionable native rejection reasons instead of one generic Permission Mode failure. */
+function claudePermissionModeSelectionFailure(
+  permissionMode: ClaudePermissionMode,
+  error: unknown,
+): HarnessError {
+  const nativeMessage = error instanceof Error ? error.message.toLowerCase() : "";
+  if (permissionMode === "auto" && nativeMessage.includes("auto mode unavailable")) {
+    return {
+      code: "nativeFailure",
+      message: "Auto mode is unavailable for the current Claude Code Model",
+      retryable: true,
+    };
+  }
+  if (permissionMode === "bypassPermissions") {
+    if (nativeMessage.includes("not launched with --dangerously-skip-permissions")) {
+      return {
+        code: "nativeFailure",
+        message:
+          "Claude Code started this Session without bypass permissions support; when running as root, set IS_SANDBOX=1 for the codexhost Host, restart it, and reopen the Session",
+        retryable: false,
+      };
+    }
+    if (nativeMessage.includes("disabled by settings or configuration")) {
+      return {
+        code: "nativeFailure",
+        message:
+          "Bypass permissions is disabled by Claude Code settings (permissions.disableBypassPermissionsMode) or organization policy",
+        retryable: false,
+      };
+    }
+  }
+  return {
+    code: "nativeFailure",
+    message: "Claude Code rejected the Permission Mode selection",
+    retryable: true,
+  };
+}
+
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -552,6 +592,7 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly #cancelTimeoutMs: number;
   readonly #closeTimeoutMs: number;
   readonly #createTransport: ClaudeAdapterDependencies["createTransport"];
+  readonly #bypassPermissionsAvailable: boolean;
   readonly #cwd: string;
   readonly #nativeRef: NativeSessionRef;
   readonly #onClosed: () => void;
@@ -610,6 +651,7 @@ class ClaudeHarnessSession implements HarnessSession {
     onPlanLimitObserved: (planLimit: ClaudePlanLimitEvent) => ClaudePlanLimitEvent | null,
     options: {
       environment?: NodeJS.ProcessEnv;
+      bypassPermissionsAvailable: boolean;
       openMode: "create" | "resume";
       sessionId: string;
       nativeRef?: NativeSessionRef;
@@ -629,6 +671,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#createTransport = environment
       ? (input) => dependencies.createTransport({ ...input, environment })
       : dependencies.createTransport;
+    this.#bypassPermissionsAvailable = options.bypassPermissionsAvailable;
     this.#randomUUID = dependencies.randomUUID;
     this.#readSessionMessages = dependencies.readSessionMessages;
     this.#readGoalRecords = dependencies.readGoalRecords;
@@ -1182,6 +1225,23 @@ class ClaudeHarnessSession implements HarnessSession {
         },
       };
     }
+    let permissionModeId = command.permissionModeId;
+    if (permissionMode === "bypassPermissions" && !this.#bypassPermissionsAvailable) {
+      if (this.#transport || this.#startupTask) {
+        return {
+          ok: false,
+          error: {
+            code: "unsupported",
+            message: CLAUDE_BYPASS_PERMISSIONS_UNAVAILABLE_MESSAGE,
+            retryable: false,
+          },
+        };
+      }
+      // Before Claude Code starts, this only restores a saved mode (the catalog never offers it).
+      // Starting in bypass would make Claude Code exit, so keep the Thread usable in the default.
+      permissionMode = "default";
+      permissionModeId = CLAUDE_DEFAULT_PERMISSION_MODE_ID;
+    }
     this.#usageGeneration += 1;
     this.#contextUsageFreshUntilMs = 0;
     this.#contextUsageCooldownUntilMs = 0;
@@ -1195,23 +1255,15 @@ class ClaudeHarnessSession implements HarnessSession {
         try {
           await transport.setPermissionMode(permissionMode);
         } catch (error) {
-          const nativeMessage = error instanceof Error ? error.message.toLowerCase() : "";
           return {
             ok: false,
-            error: {
-              code: "nativeFailure",
-              message:
-                permissionMode === "auto" && nativeMessage.includes("auto mode unavailable")
-                  ? "Auto mode is unavailable for the current Claude Code Model"
-                  : "Claude Code rejected the Permission Mode selection",
-              retryable: true,
-            },
+            error: claudePermissionModeSelectionFailure(permissionMode, error),
           };
         }
       }
       this.#requestedPermissionModeId = transport
         ? encodeClaudePermissionModeId(transport.getPermissionMode())
-        : command.permissionModeId;
+        : permissionModeId;
       const persistenceError = await this.#savePendingConfiguration();
       if (persistenceError) return { ok: false, error: persistenceError };
       this.#publishState(this.#configuredState());
@@ -1431,6 +1483,7 @@ class ClaudeHarnessSession implements HarnessSession {
         ...(model ? { model } : {}),
         thinkingOptionId: this.#requestedThinkingOptionId,
         permissionMode,
+        allowDangerouslySkipPermissions: this.#bypassPermissionsAvailable,
         onPermissionModeChanged: (mode) => this.#handlePermissionModeChanged(mode),
         onFault: () => this.#fault(faultError()),
         onPlanLimit: (planLimit) => this.#handlePlanLimit(planLimit),
@@ -2908,6 +2961,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     }
     this.#dependencies = dependencies ?? {
       randomUUID,
+      bypassPermissionsAvailable: (environment) =>
+        claudeBypassPermissionsAvailable(environment ?? options.environment ?? process.env),
       inspectInstallation: () => {
         resolveClaudeCodeExecutable({
           ...(options.command ? { command: options.command } : {}),
@@ -3044,7 +3099,10 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       stage = "model-catalog";
       const snapshot = await inspector.inspect();
       const permissionModes = snapshot.canSelectPermissionMode
-        ? claudePermissionModeCatalogForModels(snapshot.models)
+        ? claudePermissionModeCatalogForModels(
+            snapshot.models,
+            this.#dependencies.bypassPermissionsAvailable(),
+          )
         : undefined;
       if (!snapshot.canSelectModel) {
         return {
@@ -3188,6 +3246,24 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         },
       };
     }
+    const bypassPermissionsAvailable = this.#dependencies.bypassPermissionsAvailable(
+      input.environment,
+    );
+    if (!bypassPermissionsAvailable && requestedPermissionModeId === "bypassPermissions") {
+      // Claude Code exits at startup for this request. An explicit create fails visibly, while a
+      // restored mode falls back to the native default so the existing Thread stays usable.
+      if (input.kind === "create") {
+        return {
+          ok: false,
+          error: {
+            code: "unsupported",
+            message: CLAUDE_BYPASS_PERMISSIONS_UNAVAILABLE_MESSAGE,
+            retryable: false,
+          },
+        };
+      }
+      requestedPermissionModeId = CLAUDE_DEFAULT_PERMISSION_MODE_ID;
+    }
     const cwd = path.resolve(input.cwd);
     if (input.kind === "rollbackLastTurn") {
       for (const source of this.#sessions) {
@@ -3261,8 +3337,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           pending.configuration.effectiveThinkingOptionId ?? requestedThinkingOptionId;
         requestedPermissionModeId =
           input.kind === "resume" && input.permissionModeId
-            ? input.permissionModeId
+            ? requestedPermissionModeId
             : (pending.configuration.effectivePermissionModeId ?? requestedPermissionModeId);
+        if (!bypassPermissionsAvailable && requestedPermissionModeId === "bypassPermissions") {
+          requestedPermissionModeId = CLAUDE_DEFAULT_PERMISSION_MODE_ID;
+        }
       } catch {
         return {
           ok: false,
@@ -3282,6 +3361,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       (planLimit) => this.#recordPlanLimit(session, planLimit),
       {
         ...(input.environment ? { environment: input.environment } : {}),
+        bypassPermissionsAvailable,
         openMode,
         pendingSessions: this.#pendingSessions,
         knownConfiguration:
