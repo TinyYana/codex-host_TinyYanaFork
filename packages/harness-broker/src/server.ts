@@ -12,6 +12,7 @@ import type {
 } from "@codexhost/harness-adapter";
 
 import {
+  accountCreditsSnapshotSchema,
   harnessAccountListParamsSchema,
   harnessAccountSnapshotSchema,
   harnessPluginIdSchema,
@@ -21,6 +22,7 @@ import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
 import {
   HARNESS_BROKER_MAX_PENDING_REQUESTS,
   HARNESS_BROKER_PROTOCOL_VERSION,
+  HARNESS_BROKER_RETIRING_ERROR_CODE,
   harnessBrokerHelloSchema,
   harnessBrokerDescriptorSchema,
   harnessBrokerRequestSchema,
@@ -228,6 +230,12 @@ export async function startHarnessBrokerServer(input: {
   adapter: HarnessAdapter;
   generation?: string;
   token?: string;
+  /**
+   * Retire after this long with no open Session and no request, or right after an
+   * inspection reports the Harness unusable. The broker then refuses new requests as
+   * retryable, unpublishes itself and calls `onRetire` so its owner can exit.
+   */
+  idle?: { timeoutMs: number; onRetire(): void };
 }): Promise<HarnessBrokerServer> {
   harnessPluginIdSchema.parse(input.adapter.harnessId);
   if (
@@ -262,6 +270,34 @@ export async function startHarnessBrokerServer(input: {
   let openingCreate: Promise<undefined> | undefined;
   const connections = new Set<ConnectionState>();
   let closed = false;
+  let retiring = false;
+  let retireWhenIdle = false;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const busy = (): boolean =>
+    sessions.size > 0 ||
+    openingCreate !== undefined ||
+    [...connections].some((connection) => connection.queuedFrames > 0);
+  const retire = (): void => {
+    if (retiring || closed || !input.idle) return;
+    retiring = true;
+    clearTimeout(idleTimer);
+    // Unpublish first so new clients start a replacement instead of reconnecting here.
+    server.close();
+    void rm(input.descriptorPath, { force: true }).finally(() => input.idle?.onRetire());
+  };
+  // Re-arm after every frame and Session change. Never retires while any Session is
+  // open or any request is queued, so a refused request was never processed.
+  const scheduleIdle = (): void => {
+    clearTimeout(idleTimer);
+    if (!input.idle || retiring || closed || busy()) return;
+    idleTimer = setTimeout(
+      () => {
+        if (!busy()) retire();
+      },
+      retireWhenIdle ? 0 : input.idle.timeoutMs,
+    );
+    idleTimer.unref?.();
+  };
 
   const server: Server = net.createServer((socket) => {
     const state: ConnectionState = {
@@ -292,7 +328,9 @@ export async function startHarnessBrokerServer(input: {
     };
     const respond = async (
       request: HarnessBrokerRequest,
-      result: { ok: true; value: unknown } | { ok: false; error: ReturnType<typeof protocolError> },
+      result:
+        | { ok: true; value: unknown }
+        | { ok: false; error: { code: string; message: string; retryable: boolean } },
     ): Promise<void> => {
       await send({ kind: "response", id: request.id, ...result });
     };
@@ -429,6 +467,7 @@ export async function startHarnessBrokerServer(input: {
     const closeRecord = async (record: ServerSession): Promise<void> => {
       if (sessions.get(record.id) !== record) return;
       sessions.delete(record.id);
+      scheduleIdle();
       state.sessions.delete(record.id);
       record.forwarderEpoch += 1;
       const nativeSession = record.session;
@@ -458,6 +497,12 @@ export async function startHarnessBrokerServer(input: {
 
     const handleRequest = async (request: HarnessBrokerRequest): Promise<unknown> => {
       if (closed || state.closed) throw new Error("Harness broker connection is closed");
+      if (request.method === "adapter.open") retireWhenIdle = false;
+      if (request.method === "adapter.credits") {
+        harnessAccountListParamsSchema.parse(request.params);
+        const adapter = input.adapter as HarnessAdapter & { credits?: () => unknown };
+        return accountCreditsSnapshotSchema.nullable().parse(adapter.credits?.() ?? null);
+      }
       if (request.method === "adapter.inspectAccount") {
         harnessAccountListParamsSchema.parse(request.params);
         return harnessAccountSnapshotSchema
@@ -466,10 +511,13 @@ export async function startHarnessBrokerServer(input: {
       }
       if (request.method === "adapter.inspect") {
         const parsed = brokerInspectInputSchema.parse(request.params);
-        return input.adapter.inspect({
+        const inspection = await input.adapter.inspect({
           ...(parsed.cwd ? { cwd: parsed.cwd } : {}),
           ...(parsed.refresh !== undefined ? { refresh: parsed.refresh } : {}),
         });
+        // An unusable Harness gains nothing from a resident broker; exit once idle.
+        retireWhenIdle = inspection.status !== "ready";
+        return inspection;
       }
       if (request.method === "adapter.subagent.readSnapshot") {
         const subagents = input.adapter.subagents;
@@ -493,7 +541,10 @@ export async function startHarnessBrokerServer(input: {
         const sourceNativeId = sourceRef?.nativeSessionId;
         if (sourceRef && sourceRef.harnessId !== input.adapter.harnessId)
           return { ok: false, error: protocolError("Native Session belongs to another Harness") };
-        const sourceKey = sourceNativeId ? nativeWriterKey(sourceNativeId) : undefined;
+        // Fork reads the source; only its derived Session claims a new writer below.
+        // Do not reserve or release the source's existing write identity for a Fork.
+        const sourceKey =
+          sourceNativeId && openInput.kind !== "fork" ? nativeWriterKey(sourceNativeId) : undefined;
         if (sourceKey && nativeWriters.has(sourceKey)) {
           return {
             ok: false,
@@ -861,6 +912,7 @@ export async function startHarnessBrokerServer(input: {
       socket,
       (raw) => {
         state.queuedFrames += 1;
+        clearTimeout(idleTimer);
         if (state.queuedFrames > HARNESS_BROKER_MAX_PENDING_REQUESTS) {
           state.closed = true;
           socket.destroy();
@@ -894,6 +946,17 @@ export async function startHarnessBrokerServer(input: {
               return;
             }
             state.inputSequence = parsed.data.sequence;
+            if (retiring) {
+              await respond(parsed.data, {
+                ok: false,
+                error: {
+                  code: HARNESS_BROKER_RETIRING_ERROR_CODE,
+                  message: "Harness broker is exiting; retry on a new broker",
+                  retryable: true,
+                },
+              });
+              return;
+            }
             try {
               await respond(parsed.data, { ok: true, value: await handleRequest(parsed.data) });
             } catch (error) {
@@ -908,6 +971,7 @@ export async function startHarnessBrokerServer(input: {
           })
           .finally(() => {
             state.queuedFrames -= 1;
+            scheduleIdle();
           })
           .catch(() => {
             socket.destroy();
@@ -923,6 +987,7 @@ export async function startHarnessBrokerServer(input: {
         const record = sessions.get(sessionId);
         if (record) void closeRecord(record);
       }
+      scheduleIdle();
     });
   });
 
@@ -941,12 +1006,14 @@ export async function startHarnessBrokerServer(input: {
     if (process.platform !== "win32") await rm(input.socketPath, { force: true });
     throw error;
   }
+  scheduleIdle();
 
   return {
     descriptor,
     async close(): Promise<void> {
       if (closed) return;
       closed = true;
+      clearTimeout(idleTimer);
       for (const connection of connections) connection.socket.destroy();
       for (const record of sessions.values()) record.forwarderEpoch += 1;
       await Promise.all(
