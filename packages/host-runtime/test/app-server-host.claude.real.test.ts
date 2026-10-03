@@ -114,6 +114,7 @@ describe("AppServerHost hermetic Claude projection", () => {
     let nativeTurnKey: string | undefined;
     const dependencies: ClaudeAdapterDependencies = {
       randomUUID: () => `claude-hermetic-${++uuid}`,
+      bypassPermissionsAvailable: () => true,
       inspectInstallation: () => undefined,
       createInspector: () => ({
         inspect: async () => ({
@@ -158,6 +159,8 @@ describe("AppServerHost hermetic Claude projection", () => {
           setIdleTurnHandler: () => undefined,
           setThreadEventHandler: () => undefined,
           setIdleLive: () => undefined,
+          hasBackgroundTasks: () => false,
+          stopBackgroundTask: async () => undefined,
           start: async () => undefined,
           getContextUsage: async () => ({
             usedTokens: 30,
@@ -203,7 +206,6 @@ describe("AppServerHost hermetic Claude projection", () => {
     const host = new AppServerHost({
       stockCodexPath: "/synthetic/codex",
       arguments: [],
-      defaultAgent: "codex",
       desktopInput,
       desktopOutput,
       diagnosticOutput,
@@ -307,7 +309,6 @@ describe.skipIf(!RUN_REAL)("AppServerHost real Claude projection", () => {
       const host = new AppServerHost({
         stockCodexPath: "/synthetic/codex",
         arguments: [],
-        defaultAgent: "codex",
         desktopInput,
         desktopOutput,
         diagnosticOutput,
