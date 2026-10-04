@@ -1,4 +1,5 @@
 import { startAgentGroupSync } from "./agent-group-sync.js";
+import { isOrbitComposer } from "./renderer-composer-kind.js";
 import { getSharedAgentGroupPreferenceStore } from "./agent-group-preference.js";
 import {
   committedReactAncestors,
@@ -780,6 +781,7 @@ function findComposerDraftIds(composer: Element): Set<string> {
 }
 
 export function findComposerModelTarget(composer: Element): readonly unknown[] | null {
+  if (isOrbitComposer(composer)) return null;
   const draftIds = findComposerDraftIds(composer);
   const domIdentity = findComposerDomIdentity(composer);
   if (domIdentity.kind === "ambiguous") return null;
@@ -1155,7 +1157,7 @@ export function installCurrentRendererAdapter(): {
     permissionModeId?: HarnessPermissionModeId,
     composer?: Element,
   ): boolean => {
-    if (disposed) return false;
+    if (disposed || (composer && isOrbitComposer(composer))) return false;
     const selection = modelSelectionForAgent(
       null,
       null,

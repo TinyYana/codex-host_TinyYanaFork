@@ -106,6 +106,27 @@ export function createAccountsSettingsPage(
       refreshUsage.title = messages.accountCreditsRefresh;
       refreshUsage.setAttribute("aria-label", messages.accountCreditsRefresh);
       refreshUsage.append(createRendererSettingsIcon("refresh", 16));
+      let hideEmails = false;
+      const privacyToggle = document.createElement("button");
+      privacyToggle.type = "button";
+      privacyToggle.className = "settings-icon-button settings-account-privacy-toggle";
+      const updatePrivacyToggle = (): void => {
+        // The button names the action it performs next; aria-pressed reports the masked state.
+        const label = hideEmails ? messages.accountEmailsShow : messages.accountEmailsHide;
+        privacyToggle.title = label;
+        privacyToggle.setAttribute("aria-label", label);
+        privacyToggle.setAttribute("aria-pressed", String(hideEmails));
+        privacyToggle.replaceChildren(
+          createRendererSettingsIcon(hideEmails ? "eye-off" : "eye", 16),
+        );
+      };
+      updatePrivacyToggle();
+      privacyToggle.addEventListener("click", () => {
+        hideEmails = !hideEmails;
+        updatePrivacyToggle();
+        credentialImports.setHideEmails(hideEmails);
+        render();
+      });
       refreshUsage.addEventListener("click", () => {
         usageByAccountId.clear();
         loadUsage(accounts);
@@ -114,7 +135,7 @@ export function createAccountsSettingsPage(
         void credentialImports.refresh();
       });
       search.addEventListener("input", () => render());
-      toolbar.append(connected, searchWrapper, displayControls, refreshUsage);
+      toolbar.append(connected, privacyToggle, searchWrapper, displayControls, refreshUsage);
       const list = document.createElement("div");
       list.className = "settings-account-list";
       const { table, body, updateDisplay } = createAccountsTable(document, messages);
@@ -205,7 +226,7 @@ export function createAccountsSettingsPage(
         if (visibleAccounts.length + visibleHarnessAccounts.length === 0) {
           const emptyRow = document.createElement("tr");
           const emptyCell = document.createElement("td");
-          emptyCell.colSpan = 4;
+          emptyCell.colSpan = 3;
           emptyCell.className = "settings-account-empty";
           emptyCell.textContent = query ? messages.accountNoMatches : messages.accountEmpty;
           emptyRow.append(emptyCell);
@@ -215,10 +236,6 @@ export function createAccountsSettingsPage(
           body.append(
             ...renderAccountRows(document, account, messages, {
               current: accountPhase === "ready" && account.accountId === currentAccountId,
-              importAction: credentialImports.button(
-                "codex",
-                codexAccountDisplayName(account).full,
-              ),
               usage: usageByAccountId.get(account.accountId),
               display: usageDisplay,
               manage: manage.row(account),
@@ -231,6 +248,11 @@ export function createAccountsSettingsPage(
                 if (open) expandedResetAccounts.add(account.accountId);
                 else expandedResetAccounts.delete(account.accountId);
               },
+              importAction: credentialImports.button(
+                "codex",
+                codexAccountDisplayName(account).full,
+              ),
+              hideEmails,
             }),
           );
         }
@@ -245,6 +267,7 @@ export function createAccountsSettingsPage(
                 account.harnessId,
                 account.email ?? account.label ?? account.harnessName,
               ),
+              hideEmails,
             ),
           );
         }
@@ -369,8 +392,8 @@ export function createAccountsSettingsPage(
         // The page remains usable through list and refresh.
       }
       const harnessAccounts = createHarnessAccounts(context.signal, getClient, render);
-      void credentialImports.refresh();
       void harnessAccounts.refresh();
+      void credentialImports.refresh();
       load();
       return () => {
         stopCountdowns();

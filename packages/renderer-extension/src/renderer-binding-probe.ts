@@ -1,4 +1,5 @@
 import { createRemoteConnectionsControl } from "./remote-connections-control.js";
+import { isOrbitComposer } from "./renderer-composer-kind.js";
 import { handleRemoteConnectionsRequest } from "./remote-connections-request.js";
 import {
   catalogModelForRef,
@@ -999,6 +1000,7 @@ export function installRendererBindingProbe(
   const isMountedComposer = (composer: Element): boolean =>
     composer.isConnected &&
     composer.matches(CODEX_COMPOSER_SELECTOR) &&
+    !isOrbitComposer(composer) &&
     mountedByComposer.has(composer);
 
   const isCurrentModelRequest = (mounted: MountedComposer, generation: number): boolean =>
@@ -1007,7 +1009,7 @@ export function installRendererBindingProbe(
     controller.isCurrentModelRequest(mounted.composer, generation);
 
   const isCurrentOwnershipRequest = (mounted: MountedComposer, generation: number): boolean =>
-    mounted.composer.isConnected &&
+    isMountedComposer(mounted.composer) &&
     mountedByComposer.get(mounted.composer) === mounted &&
     controller.isCurrentOwnershipRequest(mounted.composer, generation);
 
@@ -1063,6 +1065,7 @@ export function installRendererBindingProbe(
     composerClient(mounted) ? "ready" : "installing";
 
   const renderMounted = (mounted: MountedComposer): void => {
+    if (!isMountedComposer(mounted.composer)) return;
     const accounts = composerCodexAccounts(mounted.composer);
     const currentCodexAccount = accounts?.accounts.find(
       ({ accountId }) => accountId === accounts.readyAccountId,
@@ -1352,6 +1355,7 @@ export function installRendererBindingProbe(
   };
 
   const applyDraftAgentCarrier = (composer: Element, agent: RendererAgent): boolean => {
+    if (isOrbitComposer(composer)) return false;
     const model = controller.modelForAgent(composer, agent);
     const hasConcreteModel = model !== undefined;
     return (
@@ -1385,6 +1389,7 @@ export function installRendererBindingProbe(
   };
 
   const loadThreadOwnership = async (mounted: MountedComposer): Promise<void> => {
+    if (!isMountedComposer(mounted.composer)) return;
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
     if (!threadId) {
       mounted.ownershipStatus = "not-required";
@@ -2663,6 +2668,7 @@ export function installRendererBindingProbe(
     if (
       mountedByComposer.has(composer) ||
       !composer.isConnected ||
+      isOrbitComposer(composer) ||
       !composer.matches(CODEX_COMPOSER_SELECTOR)
     ) {
       return;
@@ -2766,11 +2772,13 @@ export function installRendererBindingProbe(
     refreshTargetsOnNextScan = false;
     if (disposed) return;
     settingsLifecycle.refresh();
+    const transferredComposers = new Set<Element>();
     for (const [target, replacement] of pendingReplacements) {
       const sourceState = controller.get(replacement.source.composer);
       const replacementTarget = findComposerModelTarget(target);
       const replacementHostId = activeModelHostId(target);
       if (
+        isOrbitComposer(target) ||
         !shouldTransferComposerState(
           replacement.sourceModelTarget,
           replacementTarget,
@@ -2784,11 +2792,14 @@ export function installRendererBindingProbe(
         )
       ) {
         pendingReplacements.delete(target);
+      } else {
+        transferredComposers.add(replacement.source.composer);
       }
     }
     for (const [composer, mounted] of mountedByComposer) {
       if (
         !composer.isConnected ||
+        isOrbitComposer(composer) ||
         !composer.matches(CODEX_COMPOSER_SELECTOR) ||
         !mounted.control.root.isConnected
       ) {
@@ -2802,6 +2813,7 @@ export function installRendererBindingProbe(
         mounted.codexUsageGate.dispose();
         disposeComposerAgentControl(mounted.control);
         mountedByComposer.delete(composer);
+        controller.detach(composer, transferredComposers.has(composer));
         continue;
       }
       const state = controller.get(composer);
@@ -2883,6 +2895,7 @@ export function installRendererBindingProbe(
   };
 
   const applyComposerAgent = (composer: Element): boolean => {
+    if (!isMountedComposer(composer)) return false;
     const state = controller.get(composer);
     const mounted = mountedByComposer.get(composer);
     if (mounted?.modelTarget?.[0] === "conversation") {
@@ -3111,7 +3124,7 @@ export function installRendererBindingProbe(
     },
     isComposerEditor: (editor) => {
       const composer = composerForElement(editor);
-      return composer !== null && mountedByComposer.has(composer);
+      return composer !== null && isMountedComposer(composer);
     },
     readLocale: () => settingsLifecycle.locale,
     // Desktop's own suggestion menu hugs the input card and covers the
@@ -3150,7 +3163,7 @@ export function installRendererBindingProbe(
 
   const connectedComposers = (): MountedComposer[] =>
     [...mountedByComposer.values()].filter(
-      (mounted) => mounted.composer.isConnected && mounted.control.root.isConnected,
+      (mounted) => isMountedComposer(mounted.composer) && mounted.control.root.isConnected,
     );
 
   const api: RendererBindingProbeApi = {

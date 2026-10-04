@@ -77,12 +77,13 @@ async function readTranscriptEntries(
  * branch. Claude can attach a later prompt to a system record before the prior
  * assistant terminal, which makes that otherwise valid branch omit prior
  * assistant messages. History recovery needs every persisted main-session
- * message in transcript order instead.
+ * message in transcript order instead. Like the native SDK, resolve repeated
+ * UUIDs to their last record (including metadata), retaining first-seen order.
  */
 export async function readClaudeTranscript(input: TranscriptInput): Promise<unknown[] | null> {
   const entries = await readTranscriptEntries(input);
   if (!entries) return null;
-  const messages: unknown[] = [];
+  const messages = new Map<string, Record<string, unknown>>();
   for (const entry of entries) {
     if (
       !isRecord(entry) ||
@@ -92,9 +93,9 @@ export async function readClaudeTranscript(input: TranscriptInput): Promise<unkn
     ) {
       continue;
     }
-    messages.push({ ...entry, session_id: input.sessionId });
+    messages.set(entry.uuid, { ...entry, session_id: input.sessionId });
   }
-  return messages;
+  return [...messages.values()];
 }
 
 /**
