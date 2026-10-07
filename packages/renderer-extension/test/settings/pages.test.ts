@@ -46,6 +46,7 @@ import type {
   RendererConnectionSnapshot,
 } from "../../src/settings/pages.js";
 
+import { pluginDescriptor } from "../../../../tests/fixtures/harness-plugin-descriptors.js";
 import { createHarnessInstallationPanel } from "../../src/settings/harness-installation-panel.js";
 
 class FakeElement {
@@ -873,7 +874,7 @@ describe("Harness installation actions", () => {
       const run = vi.fn();
       const panel = createHarnessInstallationPanel(
         document as unknown as Document,
-        agent,
+        pluginDescriptor(agent),
         "local",
         rendererSettingsMessages("zh-CN"),
         vi.fn(),
@@ -909,7 +910,7 @@ describe("Harness installation actions", () => {
       const run = vi.fn();
       const panel = createHarnessInstallationPanel(
         document as unknown as Document,
-        "codebuddy",
+        pluginDescriptor("codebuddy"),
         "local",
         rendererSettingsMessages("en"),
         vi.fn(),
@@ -1016,7 +1017,14 @@ describe("Renderer Connections page", () => {
             {
               hostId: "remote-test",
               active: true,
-              agents: [{ agent, availability: "notInstalled", error: null }],
+              agents: [
+                {
+                  agent,
+                  plugin: pluginDescriptor(agent),
+                  availability: "notInstalled",
+                  error: null,
+                },
+              ],
             },
           ],
         }),
@@ -1086,7 +1094,7 @@ describe("Renderer Connections page", () => {
       if (agent === "zcode") expect(visibleText(panel)).toContain("请安装 ZCode Desktop");
       expect(
         visibleText(content).includes(
-          "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1 和 0.2.0-rc.2。",
+          pluginDescriptor("deepseek-harness").notice?.["zh-CN"] ?? "missing plugin notice",
         ),
       ).toBe(agent === "deepseek-harness");
       expect(visibleText(panel)).toContain("请在远程 Host 上安装。");
@@ -1354,7 +1362,9 @@ describe("Renderer Connections page", () => {
           hosts: ["local", "remote-test"].map((hostId) => ({
             hostId,
             active: hostId === "local",
-            agents: [{ agent, availability: "notInstalled", error: null }],
+            agents: [
+              { agent, plugin: pluginDescriptor(agent), availability: "notInstalled", error: null },
+            ],
           })),
         }),
         refresh: vi.fn(async () => undefined),
@@ -1388,9 +1398,7 @@ describe("Renderer Connections page", () => {
       const panel = elementWithClass(content, "settings-connection-inspector__body");
       const input = descendants(panel).find(({ tagName }) => tagName === "input");
       if (!input) throw new Error("Expected launch path input");
-      expect(visibleText(panel)).toContain(
-        agent === "zcode" ? messages.launchPathZcodeHelp : messages.launchPathWorkbuddyHelp,
-      );
+      expect(visibleText(panel)).toContain("安装目录");
       await vi.waitFor(() => expect(input.disabled).toBe(false));
       expect(diagnostics.getLaunchSettings).toHaveBeenCalledWith("local", agent);
       const save = descendants(panel).find(
@@ -1448,6 +1456,7 @@ describe("Renderer Connections page", () => {
             active: true,
             agents: (["kiro-cli", "workbuddy", "zcode"] as const).map((agent) => ({
               agent,
+              plugin: pluginDescriptor(agent),
               availability: "notInstalled" as const,
               error: null,
             })),
@@ -1498,6 +1507,7 @@ describe("Renderer Connections page", () => {
             agents: [
               {
                 agent: "deepseek-harness",
+                plugin: pluginDescriptor("deepseek-harness"),
                 availability: "ready",
                 error: null,
                 webUiAvailable: true,
@@ -1510,6 +1520,7 @@ describe("Renderer Connections page", () => {
             agents: [
               {
                 agent: "deepseek-harness",
+                plugin: pluginDescriptor("deepseek-harness"),
                 availability: "ready",
                 error: null,
                 webUiAvailable: true,
@@ -1544,7 +1555,7 @@ describe("Renderer Connections page", () => {
     dshRow.dispatch("click", { target: null });
     expect(visibleText(content)).toContain("0.2.0-rc.2");
     expect(visibleText(content)).toContain(
-      "高于 0.2.0-rc.2 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
+      pluginDescriptor("deepseek-harness").notice?.["zh-CN"] ?? "missing plugin notice",
     );
     const open = descendants(content).find(
       ({ dataset }) => dataset.connectionAction === "open-web-ui",
@@ -1676,6 +1687,7 @@ describe("Renderer Connections page", () => {
             agents: [
               {
                 agent: "pi",
+                plugin: pluginDescriptor("pi"),
                 availability: "error",
                 error: {
                   code: "processExited",
@@ -1689,6 +1701,7 @@ describe("Renderer Connections page", () => {
               },
               {
                 agent: "deepseek-harness",
+                plugin: pluginDescriptor("deepseek-harness"),
                 availability: "notInstalled",
                 error: {
                   code: "notInstalled",

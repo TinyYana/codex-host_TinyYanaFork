@@ -1,6 +1,6 @@
 import type { CodexAccountSummary, HarnessAccountListResult } from "@codexhost/shared-contracts";
 
-import { KNOWN_RENDERER_AGENTS } from "../agent-selection-state.js";
+import type { HarnessPluginDescriptor } from "@codexhost/shared-contracts";
 import { createRendererAgentIcon } from "../renderer-agent-icon.js";
 import { codexAccountDisplayName } from "../renderer-codex-account-options.js";
 import {
@@ -320,6 +320,7 @@ export function renderHarnessAccountRows(
   display: AccountUsageDisplay,
   importAction?: HTMLElement | null,
   hideEmails = false,
+  plugin?: HarnessPluginDescriptor,
 ): HTMLTableRowElement[] {
   const row = document.createElement("tr");
   row.className = "settings-account-row";
@@ -335,8 +336,7 @@ export function renderHarnessAccountRows(
   const logo = document.createElement("div");
   logo.className = "settings-harness-account__logo";
   logo.setAttribute("aria-hidden", "true");
-  const agent = KNOWN_RENDERER_AGENTS.find((agent) => agent === account.harnessId);
-  if (agent) logo.append(createRendererAgentIcon(agent, 26, document));
+  logo.append(createRendererAgentIcon(account.harnessId, 26, document, plugin));
   personCell.append(
     createAccountPerson(document, messages, {
       name,

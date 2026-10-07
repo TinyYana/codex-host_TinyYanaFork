@@ -92,9 +92,9 @@ describe("release Payload", () => {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(27 + preinstalledHarnessPluginPaths().length);
+      expect(paths).toHaveLength(29 + preinstalledHarnessPluginPaths().length);
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
-        29 + preinstalledHarnessPluginPaths().length,
+        31 + preinstalledHarnessPluginPaths().length,
       );
       expect(paths).toContain("licenses/tailwindcss-LICENSE.txt");
       expect(paths).toContain("app/plugins/enabled.json");
@@ -102,6 +102,8 @@ describe("release Payload", () => {
       expect(paths).toContain("app/console-web.js");
       expect(paths).toContain("app/plugins/claude-code/plugin.mjs");
       expect(paths).toContain("licenses/opencodex-LICENSE.txt");
+      expect(paths).toContain("app/plugins/codex-usage/plugin.mjs");
+      expect(paths).toContain("app/plugins/codex-usage/manifest.json");
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "libexec/codexhost-node-repl.exe",
       );

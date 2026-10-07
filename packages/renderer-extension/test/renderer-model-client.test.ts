@@ -522,6 +522,7 @@ describe("Renderer fixed Model request client", () => {
       "listThreadOwnership",
       "openConsole",
       "openHarnessWebUi",
+      "readDelegationThread",
       "readUpdateStatus",
       "recoverCodexAccounts",
       "refreshCodexAccounts",

@@ -1,4 +1,6 @@
 import {
+  DELEGATION_READ_METHOD,
+  delegationReadParamsSchema,
   EXTERNAL_THREAD_PREWARM_PARAM,
   THREAD_PREWARM_DISCARD_METHOD,
   threadPrewarmDiscardParamsSchema,
@@ -37,6 +39,11 @@ import {
 import { handleCredentialImports } from "./credential-imports.js";
 import { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
 import {
+  handleModelPriceOverridesRequest,
+  isModelPriceOverridesMethod,
+  ModelPriceOverridesError,
+} from "./model-price-overrides-file.js";
+import {
   HARNESS_DISPLAY_GET_METHOD,
   HARNESS_DISPLAY_SET_METHOD,
   harnessDisplayGetSchema,
@@ -73,8 +80,11 @@ import type {
   HostQuestionInteraction,
   SessionGoalChangedEvent,
 } from "@codexhost/harness-adapter";
-import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
-import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
+import { parseHostUsage, type HostEvent, type HostUsage } from "@codexhost/harness-adapter";
+import type {
+  HarnessPluginContext,
+  HarnessUsageStatisticsAdapter,
+} from "@codexhost/harness-adapter/plugin";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   accountCreditsSnapshotSchema,
@@ -184,6 +194,7 @@ import {
 } from "./delegation-types.js";
 import { HarnessDelegationCoordinator } from "./harness-delegation-coordinator.js";
 import { loadHarnessPlugins } from "./harness-plugin-loader.js";
+import type { HarnessPluginRegistry } from "./harness-plugin-registry.js";
 import {
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
@@ -260,6 +271,9 @@ import {
 } from "./thread-list-aggregator.js";
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { externalThreadListEntries } from "./external-thread-list.js";
+import { ModelPriceCatalog } from "./model-prices.js";
+import type { UsageStatistics, UsageStatisticsSource } from "./usage-statistics.js";
+import { USAGE_STATISTICS_METHOD, usageStatisticsParamsSchema } from "@codexhost/shared-contracts";
 import {
   carriesHostThreadListCursor,
   CodexTurnProjector,
@@ -342,6 +356,10 @@ export interface AppServerHostOptions {
   /** Present only on the local Host started by the Launcher. */
   consoleOpener?: HostConsoleOpener;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
+  /** Shared by all Hosts of one runtime; defaults to the bundled snapshot only. */
+  modelPrices?: ModelPriceCatalog;
+  /** Machine-wide usage statistics; one per runtime, read from the loaded Harness plugins. */
+  usageStatistics?: UsageStatistics;
 }
 
 interface TurnProjectionGate {
@@ -467,29 +485,6 @@ function rpcError(request: JsonRpcRequest, code: number, message: string): JsonO
 
 function unixSeconds(): number {
   return Math.floor(Date.now() / 1000);
-}
-
-function approvalServerName(harnessId: ExternalHarnessId): string {
-  switch (harnessId) {
-    case "pi":
-      return "Pi";
-    case "claude-code":
-      return "Claude Code";
-    case "deepseek-harness":
-      return "DeepSeek Harness";
-    case "grok":
-      return "Grok";
-    case "opencode":
-      return "OpenCode";
-    case "omp":
-      return "Oh My Pi";
-    case "antigravity":
-      return "Antigravity CLI";
-    case "kiro-cli":
-      return "Kiro CLI";
-    default:
-      return harnessId;
-  }
 }
 
 const HOST_APPROVAL_REQUEST_ID_MIN = -2_000_000;
@@ -660,12 +655,15 @@ export class AppServerHost {
   #nativeAccountObserver: NativeAccountObserver | undefined;
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
   #pluginDescriptors: HarnessPluginDescriptor[] = [];
+  #usageOnlyAdapters: HarnessUsageStatisticsAdapter[] = [];
+  #plugins: HarnessPluginRegistry | undefined;
   readonly #launchSettings: HarnessLaunchSettingsStore;
   readonly #accountInspections = new HarnessAccountInspectionCache();
   #externalRuntime: ExternalThreadRuntime;
   readonly #externalPrewarms = new ExternalThreadPrewarms();
   readonly #externalSteering = new ExternalTurnSteering();
   readonly #liveCommandCache = new LiveCommandCatalogCache();
+  readonly #modelPrices: ModelPriceCatalog;
   #repository: ExternalThreadRepository;
   #pendingDesktopApprovals = new Map<HostApprovalRequestId, PendingDesktopApproval>();
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
@@ -713,6 +711,7 @@ export class AppServerHost {
       diagnosticOutput: process.stderr,
       ...options,
     };
+    this.#modelPrices = options.modelPrices ?? new ModelPriceCatalog();
     this.#writer = new OrderedWriter(this.#options.desktopOutput, (value) => {
       this.#noteDesktopReply(value);
       return this.#takeConsoleReply(value);
@@ -935,6 +934,17 @@ export class AppServerHost {
     else desktopInput.destroy();
   }
 
+  #attachUsageStatistics(): void {
+    this.#options.usageStatistics?.attach((): UsageStatisticsSource[] =>
+      [...new Set([...this.#externalAdapters.values(), ...this.#usageOnlyAdapters])].flatMap(
+        (adapter) =>
+          adapter.usageStatistics
+            ? [{ harness: adapter.harnessId, capability: adapter.usageStatistics }]
+            : [],
+      ),
+    );
+  }
+
   #waitForPlugins(): Promise<void> {
     return (this.#pluginLoading ??= this.#loadInstalledPlugins().catch((error: unknown) => {
       this.#diagnose(`Harness plugin load failed: ${errorMessage(error)}`);
@@ -959,8 +969,22 @@ export class AppServerHost {
       await plugins.close().catch((error: unknown) => this.#diagnose(error));
       return;
     }
+    this.#plugins = plugins;
     this.#pluginDescriptors = plugins.list();
+    this.#usageOnlyAdapters = [...plugins.usageAdapters.values()];
     for (const [id, adapter] of plugins.adapters) this.#externalAdapters.set(id, adapter);
+  }
+
+  async #closeAdapters(): Promise<void> {
+    const results = await Promise.allSettled([
+      this.#plugins?.close(),
+      ...[...new Set(this.#options.externalAdapters?.values())].map((adapter) =>
+        Promise.resolve().then(() => adapter.close()),
+      ),
+    ]);
+    for (const result of results) {
+      if (result.status === "rejected") this.#diagnose("Harness plugin cleanup failed");
+    }
   }
 
   async run(): Promise<number> {
@@ -970,11 +994,7 @@ export class AppServerHost {
       this.#diagnose(`Host initialization failed: ${errorMessage(error)}`);
       this.#pluginLoadAbort.abort();
       await this.#pluginLoading;
-      await Promise.allSettled(
-        [...new Set(this.#externalAdapters.values())].map((adapter) =>
-          Promise.resolve().then(() => adapter.close()),
-        ),
-      );
+      await this.#closeAdapters();
       this.#unregisterDelegationApi?.();
       this.#unregisterDelegationApi = undefined;
       this.#unsubscribeAccountState?.();
@@ -997,7 +1017,7 @@ export class AppServerHost {
       }
     }
     // Keep the existing whole-registry loading policy, but do not hold up Desktop initialization.
-    void this.#waitForPlugins();
+    void this.#waitForPlugins().then(() => this.#attachUsageStatistics());
     this.#options.sharedThreads?.start((message) => {
       void this.#writer.json(message).catch((error: unknown) => this.#diagnose(error));
     });
@@ -1024,11 +1044,7 @@ export class AppServerHost {
       const threads = this.#externalRuntime.values();
       await Promise.allSettled(threads.map(({ session }) => session.close()));
       await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
-      await Promise.allSettled(
-        [...new Set(this.#externalAdapters.values())].map((adapter) =>
-          Promise.resolve().then(() => adapter.close()),
-        ),
-      );
+      await this.#closeAdapters();
       for (const pending of [...this.#pendingDesktopApprovals.values()]) {
         await this.#resolveDesktopApproval(pending.interaction.interactionId).catch(
           () => undefined,
@@ -1306,6 +1322,27 @@ export class AppServerHost {
       );
       return;
     }
+    if (request.method === DELEGATION_READ_METHOD) {
+      const parsed = delegationReadParamsSchema.safeParse(request.params);
+      if (!parsed.success) {
+        await this.#writer.json(rpcError(request, -32602, "Invalid Thread read request"));
+        return;
+      }
+      const shared = await this.#options.sharedThreads?.route(request);
+      if (shared) {
+        await this.#writer.json(shared);
+        return;
+      }
+      await this.#waitForPlugins();
+      const result = await this.#delegationCoordinator.read({
+        threadId: parsed.data.threadId,
+        view: parsed.data.view,
+        ...(parsed.data.cursor !== undefined ? { cursor: parsed.data.cursor } : {}),
+        ...(parsed.data.limit !== undefined ? { limit: parsed.data.limit } : {}),
+      });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      return;
+    }
     if (this.#options.externalOnly && request.method === "codexhost/shared-threads/placements") {
       await this.#writer.json(
         rpcEnvelope(request, {
@@ -1397,6 +1434,42 @@ export class AppServerHost {
         await this.#writer.json(
           rpcError(request, -32000, "Could not save or read Harness display settings"),
         );
+      }
+      return;
+    }
+    if (request.method === USAGE_STATISTICS_METHOD) {
+      const parsed = usageStatisticsParamsSchema.safeParse(request.params ?? {});
+      const statistics = this.#options.usageStatistics;
+      if (!parsed.success || !statistics) {
+        await this.#writer.json(
+          parsed.success
+            ? rpcError(request, -32000, "Usage statistics are unavailable on this Host")
+            : rpcError(request, -32602, "Invalid usage statistics request"),
+        );
+        return;
+      }
+      try {
+        await this.#waitForPlugins();
+        this.#attachUsageStatistics();
+        const result = await statistics.get(parsed.data);
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch (error) {
+        this.#diagnose(error);
+        await this.#writer.json(rpcError(request, -32000, errorMessage(error)));
+      }
+      return;
+    }
+    if (isModelPriceOverridesMethod(request.method)) {
+      try {
+        const result = await handleModelPriceOverridesRequest(
+          this.#modelPrices,
+          request.method,
+          request.params,
+        );
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch (error) {
+        if (!(error instanceof ModelPriceOverridesError)) this.#diagnose(error);
+        await this.#writer.json(rpcError(request, -32000, errorMessage(error)));
       }
       return;
     }
@@ -3251,6 +3324,8 @@ export class AppServerHost {
             includeTurns: false,
           }),
       }));
+    const threadUsage =
+      resolution.kind === "official" ? null : await this.#threadUsage(resolution.thread);
     const inspection = threadInspectionSchema.parse(
       resolution.kind === "official"
         ? {
@@ -3287,7 +3362,7 @@ export class AppServerHost {
                 }
               : {}),
             history: resolution.thread.session.capabilities.history,
-            ...(resolution.thread.latestUsage ? { usage: resolution.thread.latestUsage } : {}),
+            ...(threadUsage ? { usage: threadUsage } : {}),
             locked: true,
           },
     );
@@ -3330,7 +3405,7 @@ export class AppServerHost {
       adapter && isCreditsAdapter(adapter) ? projectAccountCredits(adapter.credits()) : null;
     const result = threadUsageInspectionSchema.parse({
       threadId: params.data.threadId,
-      usage: resolution.thread.latestUsage,
+      usage: await this.#threadUsage(resolution.thread),
       ...(credits ? { accountCredits: credits } : {}),
     });
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
@@ -5222,6 +5297,7 @@ export class AppServerHost {
       return;
     }
     let event = output.event;
+    if (this.#meterTurnTiming(thread, event)) await this.#notifyThreadUsage(thread);
     if (event.type === "item.started" && event.item.type === "subagentDelegation") {
       event = {
         ...event,
@@ -5320,6 +5396,18 @@ export class AppServerHost {
       });
       return;
     }
+    if (event.type === "usage.request" || event.type === "usage.history") {
+      if (this.#externalRuntime.get(thread.id) !== thread) return;
+      if (event.type === "usage.request") {
+        const changed = thread.usageMeter.recordRequest(event.request, thread.activeTurnId);
+        // Replayed history is announced once by the following usage.history.
+        if (!changed || event.request.historical === true) return;
+      } else {
+        thread.usageMeter.recordHistory(event.complete);
+      }
+      await this.#notifyThreadUsage(thread);
+      return;
+    }
     if (event.type === "subagent.transcript.changed") {
       const nativeSubagentId = event.nativeSubagentId;
       const record = (await this.#repository.list()).find(
@@ -5399,7 +5487,8 @@ export class AppServerHost {
       await this.#resolveDesktopQuestion(event.interactionId);
     }
     const ephemeralTurn =
-      event.type === "turn.completed" && thread.ephemeralTurnIds.has(event.turnId);
+      event.type === "turn.completed" &&
+      (event.ephemeral === true || thread.ephemeralTurnIds.has(event.turnId));
     if (event.type === "turn.completed" && !ephemeralTurn) {
       const persistenceError = await this.#persistTerminalIdentity(thread, event);
       if (persistenceError) {
@@ -5659,7 +5748,8 @@ export class AppServerHost {
       result = projection.projector.projectApproval(
         interaction,
         this.#pluginDescriptors.find(({ id }) => id === thread.harnessId)?.name ??
-          approvalServerName(thread.harnessId),
+          this.#pluginDescriptors.find(({ id }) => id === thread.harnessId)?.name ??
+          thread.harnessId,
       );
     } catch (error) {
       this.#diagnose(error);
@@ -5950,6 +6040,54 @@ export class AppServerHost {
 
   #isKnownExternalTurn(thread: ExternalThread, turnId: HostTurnId): boolean {
     return thread.projectedTurns.has(turnId) || thread.turns.some((turn) => turn.id === turnId);
+  }
+
+  /** Native snapshot plus Host-derived metering; metering faults never hide native fields. */
+  async #threadUsage(thread: ExternalThread): Promise<HostUsage | null> {
+    try {
+      const usage = thread.usageMeter.derive(thread.latestUsage, await this.#modelPrices.lookup());
+      // An unpriced model may have been listed since the price table was fetched.
+      if (usage?.unpricedModels?.length) this.#modelPrices.missing();
+      return usage;
+    } catch (error) {
+      this.#diagnose(error);
+      return thread.latestUsage;
+    }
+  }
+
+  async #notifyThreadUsage(thread: ExternalThread): Promise<void> {
+    await this.#writer.json({
+      method: THREAD_USAGE_UPDATED_METHOD,
+      params: { threadId: thread.id },
+    });
+  }
+
+  /** Host-observed Turn timing; returns true when a derived metric changed. */
+  #meterTurnTiming(thread: ExternalThread, event: HostEvent): boolean {
+    if (this.#externalRuntime.get(thread.id) !== thread) return false;
+    const meter = thread.usageMeter;
+    switch (event.type) {
+      case "turn.started":
+      case "turn.autonomous.started":
+        meter.turnStarted(event.turnId, Date.now());
+        return false;
+      case "item.updated":
+        return event.update.type === "text.append" && event.update.text.length > 0
+          ? meter.outputObserved(event.turnId, Date.now())
+          : false;
+      case "item.started":
+      case "item.completed": {
+        const item = event.type === "item.started" ? event.item : event.snapshot.item;
+        return (item.type === "agentMessage" || item.type === "reasoning") && item.text.length > 0
+          ? meter.outputObserved(event.turnId, Date.now())
+          : false;
+      }
+      case "turn.completed":
+        meter.turnCompleted(event.turnId);
+        return true;
+      default:
+        return false;
+    }
   }
 
   async #replayExternalUsage(thread: ExternalThread): Promise<void> {
