@@ -38,6 +38,7 @@ export {
 export {
   acquireUpdateOperationLock,
   cleanupTerminalUpdateState,
+  discoverActiveUpdateStatus,
   discoverLatestUpdateStatus,
   isUpdateOperationActive,
   recoverUpdateOperationLock,
