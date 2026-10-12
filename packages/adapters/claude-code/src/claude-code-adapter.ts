@@ -267,6 +267,7 @@ export const claudeCommandCatalog = harnessCommandCatalogSchema.parse({
     {
       id: "claude.compact",
       invocation: "/compact",
+      localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
       label: "Compact context",
       description: "Compact the current conversation context",
       argumentMode: "text",
@@ -584,6 +585,7 @@ export function projectClaudePlanLimitToCredits(
           productUsage: [
             {
               product: "7-day window",
+              periodType: "seven_day",
               usagePercent: other.utilizationPercent,
               ...(other.resetsAtUnix !== undefined
                 ? { resetsAt: isoFromUnix(other.resetsAtUnix) }
