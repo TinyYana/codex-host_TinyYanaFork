@@ -342,8 +342,15 @@ ChatGPT 登录的 Codex 额度耗尽时，外部 Agent 的发送按钮仍为 dis
 3. 对每个布尔候选，用追踪代理重放 atom.read；26.928 的 signal 会间接读取 readonly
    布尔 selector，需有界递归重放，拒绝循环、结果不一致和混合门：
    - 读取 hardBlocked 但不读取 active、账号门字段：reserve 门，必须恰好 1 个
-   - 读取 authMethod 且读取 rate_limit.allowed，不读取 reserve 字段：账号门，
-     额度耗尽时必须恰好 1 个
+   - 读取 authMethod 且读取 rate_limit.allowed，不读取 hardBlocked：账号门，
+     额度耗尽时必须恰好 1 个。耗尽且没有 credits 时它会经 readonly 布尔 selector
+     读取 reserve active 作为豁免，这不算混合门；同时读取 hardBlocked 才是混合门
+4. 未耗尽时账号门在 allowed 处就短路，看不到耗尽路径。用同样的重放法再跑一次账号门，
+   遇到 rate-limit 查询结果时返回一份假副本：rate_limit.allowed=false，
+   credits.has_credits=false、unlimited=false，其余字段（account_id、user_id、
+   plan_type 等）沿用真实值。只用 store.get 与 atom.read，不写 store、query cache
+   或 atom，不输出账号值。预期重放结果为 true、读取到 reserve.active，
+   且账号门与 reserve 门仍各恰好 1 个
 ```
 
 任一步骤数量不对，按 Desktop 新结构修改识别条件；不要改为按 hook 序号、压缩名或写入账号数据放行。若 Desktop 改为按 Thread、Model 或 host 豁免外部 Harness，或不再在 Renderer 中拦截，删除该模块。

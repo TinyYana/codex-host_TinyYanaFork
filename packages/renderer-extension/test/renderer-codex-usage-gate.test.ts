@@ -17,23 +17,42 @@ function desktopStore() {
   let allowed = false;
   let hardBlocked = false;
   const auth: Atom = { read: () => ({ authMethod, authenticatedAccountId: "account" }) };
-  const usage: Atom = { read: () => ({ data: { rate_limit: { allowed } } }) };
+  const usage: Atom = {
+    read: () => ({
+      data: { rate_limit: { allowed }, credits: { has_credits: false, unlimited: false } },
+    }),
+  };
   const reserve: Atom = { read: () => ({ active: false, eligible: true, hardBlocked }) };
+  // Desktop resolves a host-parameterized family member before the Jotai getter
+  // sees it, so `get(family, "local")` reaches the selector as one readonly atom.
+  const reserveActiveMembers = new Map<string, Atom>();
+  const reserveActiveFor = (hostId: string): Atom => {
+    const member = reserveActiveMembers.get(hostId) ?? {
+      read: (get) => (get(reserve) as { active: boolean }).active,
+    };
+    reserveActiveMembers.set(hostId, member);
+    return member;
+  };
   const accountGate: Atom = {
     read: (get) => {
       const a = get(auth) as { authMethod: string };
       // Like Desktop: API-key sign-in returns before reading ChatGPT usage.
       if (a.authMethod !== "chatgpt") return false;
-      return (
-        (get(usage) as { data: { rate_limit: { allowed: boolean } } }).data.rate_limit.allowed ===
-        false
-      );
+      const { data } = get(usage) as {
+        data: { rate_limit: { allowed: boolean }; credits: Record<string, boolean> };
+      };
+      // Like Desktop: once usage is exhausted without credits, an active
+      // reserve exempts the Composer from this gate.
+      if (data.rate_limit.allowed !== false || data.credits.has_credits || data.credits.unlimited) {
+        return false;
+      }
+      return get(reserveActiveFor("local")) !== true;
     },
   };
   const reserveGate: Atom = {
     read: (get) => (get(reserve) as { hardBlocked: boolean }).hardBlocked,
   };
-  const reserveActive: Atom = { read: (get) => (get(reserve) as { active: boolean }).active };
+  const reserveActive = reserveActiveFor("local");
   const listeners = new Map<Atom, Set<() => void>>();
   const emit = () => {
     // Model Jotai's propagation to derived signal atoms; React's listener
@@ -431,5 +450,80 @@ describe("Codex usage gate for external Harness Composers", () => {
     Object.defineProperty(f.composer, "isConnected", { value: false });
     expect(f.gate.refresh()).toBe("native");
     expect(f.blocked()).toBe(true);
+  });
+});
+
+describe("Codex usage gate while ChatGPT Codex usage is exhausted", () => {
+  const variants = [{}, { snapshotWrapper: true, signalReserve: true }];
+
+  it("binds both gates on first use although the Account gate reads reserve active", () => {
+    for (const options of variants) {
+      const source = desktopStore();
+      source.setHardBlocked(true);
+      const f = composerFixture(source, options);
+      expect(source.store.get(source.accountGate)).toBe(true);
+      expect(inspectComposerCodexUsageGate(f.composer)).toEqual({
+        ownerCount: 1,
+        reserveGateCount: 1,
+        accountGateCount: 1,
+      });
+      expect(f.gate.update(true)).toBe("bypassed");
+      expect(required(f.instances[1]).getSnapshot()).toBe(false);
+      expect(required(f.instances[2]).getSnapshot()).toBe(false);
+      expect(source.store.get(source.accountGate)).toBe(true);
+      expect(source.store.set).not.toHaveBeenCalled();
+    }
+  });
+
+  it("rebinds after Desktop replaces the Composer hooks during exhaustion", () => {
+    for (const options of variants) {
+      const source = desktopStore();
+      // Bound before usage ran out, then Desktop remounts while exhausted.
+      source.setAllowed(true);
+      const f = composerFixture(source, options);
+      expect(f.gate.update(true)).toBe("bypassed");
+      source.setAllowed(false);
+      const replacement = composerFixture(source, options);
+      f.owner.memoizedState = replacement.owner.memoizedState;
+      expect(replacement.blocked()).toBe(true);
+      expect(f.gate.refresh()).toBe("bypassed");
+      expect(replacement.blocked()).toBe(false);
+      f.gate.dispose();
+      expect(replacement.blocked()).toBe(true);
+    }
+  });
+
+  it("restores native gates on update(false), dispose and Composer removal", () => {
+    const f = composerFixture();
+    expect(f.gate.update(true)).toBe("bypassed");
+    expect(f.gate.update(false)).toBe("native");
+    expect(f.blocked()).toBe(true);
+
+    expect(f.gate.update(true)).toBe("bypassed");
+    f.gate.dispose();
+    expect(f.blocked()).toBe(true);
+    expect(f.gate.refresh()).toBe("native");
+
+    expect(f.gate.update(true)).toBe("bypassed");
+    Object.defineProperty(f.composer, "isConnected", { value: false });
+    expect(f.gate.refresh()).toBe("native");
+    expect(f.blocked()).toBe(true);
+  });
+
+  it("still rejects an Account gate that also reads reserve hardBlocked", () => {
+    for (const options of variants) {
+      const source = desktopStore();
+      const accountRead = source.accountGate.read;
+      const reserveRead = source.reserveGate.read;
+      source.accountGate.read = (get) => {
+        const account = accountRead(get);
+        const reserve = reserveRead(get);
+        return Boolean(account || reserve);
+      };
+      const f = composerFixture(source, options);
+      expect(inspectComposerCodexUsageGate(f.composer).ownerCount).toBe(0);
+      expect(f.gate.update(true)).toBe("unsupported");
+      expect(f.blocked()).toBe(true);
+    }
   });
 });

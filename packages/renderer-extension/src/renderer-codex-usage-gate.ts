@@ -203,8 +203,11 @@ function gateKind({ store, atom }: Subscription): GateKind | "mixed" | null {
   }
   const reserve = read.has("reserve.hardBlocked") && !read.has("reserve.active");
   const account = read.has("auth.authMethod") && read.has("limit.allowed");
-  // A combined selector cannot be separated into the two verified gates.
-  if (account && (read.has("reserve.hardBlocked") || read.has("reserve.active"))) return "mixed";
+  // Once usage is exhausted without credits, the Account gate reads the
+  // reserve's `active` as an exemption; that alone does not combine the gates.
+  // A selector that also reads `hardBlocked` cannot be separated into the two
+  // verified gates.
+  if (account && read.has("reserve.hardBlocked")) return "mixed";
   if (reserve) return "reserve";
   if (account) return "account";
   return null;
