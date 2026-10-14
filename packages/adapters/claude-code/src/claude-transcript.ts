@@ -20,7 +20,7 @@ async function existingFile(file: string): Promise<boolean> {
   }
 }
 
-async function findTranscript(input: {
+export async function findClaudeTranscript(input: {
   cwd: string;
   environment: NodeJS.ProcessEnv;
   sessionId: string;
@@ -57,7 +57,7 @@ async function readTranscriptEntries(
   input: TranscriptInput,
   includes?: string,
 ): Promise<unknown[] | null> {
-  const transcript = await findTranscript(input);
+  const transcript = await findClaudeTranscript(input);
   if (!transcript) return null;
   const contents = await readFile(transcript, "utf8");
   return contents.split("\n").flatMap((line) => {

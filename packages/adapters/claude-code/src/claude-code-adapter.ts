@@ -85,6 +85,7 @@ import { SessionImportScope } from "@codexhost/harness-adapter/session-import";
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
 import { ClaudePendingSessions, isPendingClaudeSession } from "./pending-session.js";
 import { forkClaudeSession } from "./claude-fork.js";
+import { remapForkedSessionReferences } from "./claude-fork-references.js";
 import { mapClaudeSnapshot, mapClaudeSubagentSnapshot } from "./claude-history.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
 import { readClaudeGoalRecords, readClaudeTranscript } from "./claude-transcript.js";
@@ -3267,8 +3268,20 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           abortTimeoutMs: this.#cancelTimeoutMs,
         }),
       deleteSession: ({ cwd, sessionId }) => deleteClaudeSession(sessionId, { dir: cwd }),
-      forkSession: ({ checkpointId, cwd, sourceSessionId }) =>
-        forkClaudeNativeSession(sourceSessionId, { dir: cwd, upToMessageId: checkpointId }),
+      forkSession: async ({ checkpointId, cwd, sourceSessionId }) => {
+        const forked = await forkClaudeNativeSession(sourceSessionId, {
+          dir: cwd,
+          upToMessageId: checkpointId,
+        });
+        // An unresolved reference costs only prompt cache, never history, so a failure here
+        // must not fail the Fork.
+        await remapForkedSessionReferences({
+          cwd,
+          environment: options.environment ?? process.env,
+          sessionId: forked.sessionId,
+        }).catch(() => undefined);
+        return forked;
+      },
       getSessionInfo: async ({ sessionId }) => {
         const info = await getClaudeSessionInfo(sessionId);
         if (!info) return undefined;
