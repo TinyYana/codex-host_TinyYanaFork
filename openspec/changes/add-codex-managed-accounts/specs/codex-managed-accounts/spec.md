@@ -58,12 +58,17 @@ Switching SHALL: assert idle (no active official or external work; new admission
 
 ### Requirement: Host SHALL NOT terminate external Codex processes for a switch
 
-CodexHost SHALL only stop the backend it owns. When another Codex process appears to use the same `CODEX_HOME`, the switch SHALL fail with an explicit unsafe-external-process error instead of terminating it. Detection is best-effort; when detection is unavailable the transaction relies on identity verification.
+CodexHost SHALL only stop the backend it owns. When another Codex process appears to use the same `CODEX_HOME`, the switch SHALL fail with an explicit unsafe-external-process error instead of terminating it. The `exec-server` Local Work executor started by the same Desktop instance as the Host is not external. Detection is best-effort; when detection is unavailable the transaction relies on identity verification.
 
 #### Scenario: External CLI blocks the switch
 
 - **WHEN** a user-launched Codex CLI on the same home is detected during a switch
 - **THEN** the switch SHALL fail with the unsafe-external-process reason and terminate nothing
+
+#### Scenario: Desktop Local Work executor does not block the switch
+
+- **WHEN** the only other Codex process on the same home is the `exec-server` that the Desktop instance running this Host started
+- **THEN** detection SHALL NOT treat it as external and the switch SHALL proceed
 
 ### Requirement: Delete SHALL affect only saved non-current entries
 

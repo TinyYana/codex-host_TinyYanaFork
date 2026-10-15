@@ -35,7 +35,7 @@ Account 仍然只是認證身分，不等於 Harness、Model、Provider 或 Bill
 2. 取得 change lease：`OfficialWorkGate` 進入 `changing`，之後新進來的官方請求不會被 admit，而是等切換結束再轉發到新的 backend（最多 30 秒，逾時才以 `changing` 失敗）；Desktop 會把啟動檢查請求失敗視為致命錯誤而退出，所以不能立即拒絕。若有進行中的原生登入/登出，切換被拒絕。
 3. **Turn 檢查**：gate 只知道 in-flight 請求，不知道 Turn。所以 lease 拿到之後，同步詢問 Turn 的擁有者（`AppServerHost` 透過 `bindIdleProbe` 提供 `#hasActiveWork()`）；有任何官方或外部 Turn 在跑就回 busy，backend 不會被停。
 4. 保存目前最新的 credential。
-5. **外部行程檢查**：偵測是否有其他 Codex 行程（例如終端機裡的 `codex` CLI）使用同一個 `CODEX_HOME`。有的話回 `unsafe-external-process`，**不終止任何行程**，此時什麼都還沒停、什麼都還沒寫。偵測是 best-effort（`ps`；讀得到環境變數時以 `CODEX_HOME` 判斷是否同一個 home；Windows 目前不偵測），偵測不到就放行，由第 9 步兜底。
+5. **外部行程檢查**：偵測是否有其他 Codex 行程（例如終端機裡的 `codex` CLI）使用同一個 `CODEX_HOME`。有的話回 `unsafe-external-process`，**不終止任何行程**，此時什麼都還沒停、什麼都還沒寫。偵測是 best-effort（`ps`；讀得到環境變數時以 `CODEX_HOME` 判斷是否同一個 home；Windows 目前不偵測），偵測不到就放行，由第 9 步兜底。啟動這個 Host 的同一個 Desktop 實例底下、子命令為 `exec-server` 的 `codex`（Desktop 的 Local Work executor）不算外部行程：它只在啟動時讀取原生登入，之後持有固定的 bearer token，不會回寫 `auth.json`。切換後它仍以舊帳號連線，直到 Desktop 因故重啟它。
 6. 停止自己擁有的 backend，等到退出證明。
 7. 再保存一次目前 credential（backend 退出時可能剛好輪換了 token）。
 8. 原子寫入目標 credential，並回讀比對。

@@ -11,6 +11,9 @@ import { CodexAccountAutoSwitch } from "../src/account/account-auto-switch.js";
 import type { CodexAccountControl } from "../src/account/codex-account-control.js";
 import {
   codexHomeFromEnvironmentListing,
+  findExternalCodexProcesses,
+  isExecServerInvocation,
+  isUnderHostDesktop,
   parseProcessRows,
   selectExternalCodexPids,
 } from "../src/account/external-codex-processes.js";
@@ -169,6 +172,74 @@ describe("external Codex process detection", () => {
     expect(selectExternalCodexPids(rows, { executableNames: ["codex"], hostPid: 200 })).toEqual([
       400,
     ]);
+  });
+
+  describe("Desktop Local Work executor", () => {
+    const codex = "/Applications/Codex.app/Contents/Resources/codex";
+    const shim = "/Applications/Codex.app/Contents/Resources/libexec/codexhost-shim";
+    const tree = [
+      `  100     1 /Applications/Codex.app/Contents/MacOS/Codex`,
+      `  110   100 ${shim}`,
+      `  120   110 /usr/local/bin/node`,
+      `  130   120 ${codex}`,
+      `  140   100 ${shim}`,
+      `  150   140 ${codex}`,
+      `  160   100 ${shim}`,
+      `  170   160 ${codex}`,
+      `  200     1 /Applications/Codex.app/Contents/MacOS/Codex`,
+      `  210   200 ${shim}`,
+      `  220   210 ${codex}`,
+      `  300     1 /bin/zsh`,
+      `  310   300 /opt/homebrew/bin/codex`,
+    ].join("\n");
+    const executor = `${codex} -c forced_login_method="chatgpt" exec-server --remote https://example.invalid/api --environment-id env`;
+    const helper = `${codex} -c forced_login_method="chatgpt" app-server`;
+    const invocations: Record<number, string> = {
+      130: `${codex} app-server --listen ws://127.0.0.1:0`,
+      150: executor,
+      170: helper,
+      220: executor,
+      310: `/opt/homebrew/bin/codex exec-server --remote https://example.invalid/api --environment-id env`,
+    };
+    const ps = async (args: readonly string[]): Promise<string> => {
+      if (args[0] === "-axo") return tree;
+      const pid = Number(args.at(-1));
+      // `ps eww` without a visible CODEX_HOME: every candidate counts as using the default home.
+      return args[0] === "-ww"
+        ? `${invocations[pid] ?? ""}\n`
+        : `${invocations[pid] ?? ""} PATH=/bin\n`;
+    };
+
+    it.skipIf(process.platform === "win32")(
+      "allows only the exec-server started by this Host's Desktop through its Shim",
+      async () => {
+        await expect(
+          findExternalCodexProcesses({
+            home: "/home/u/.codex",
+            defaultHome: "/home/u/.codex",
+            executableNames: ["codex"],
+            hostPid: 120,
+            ps,
+          }),
+        ).resolves.toEqual([170, 220, 310]);
+      },
+    );
+
+    it("recognizes the exec-server subcommand only in subcommand position", () => {
+      expect(isExecServerInvocation(executor, codex)).toBe(true);
+      expect(isExecServerInvocation(`${codex} exec-server --remote u`, codex)).toBe(true);
+      expect(isExecServerInvocation(helper, codex)).toBe(false);
+      expect(isExecServerInvocation(`${codex} exec "run exec-server"`, codex)).toBe(false);
+      expect(isExecServerInvocation(`${codex} --profile p exec-server`, codex)).toBe(false);
+      expect(isExecServerInvocation("", codex)).toBe(false);
+    });
+
+    it("finds no Desktop for a Host that a Shim did not start", () => {
+      const rows = parseProcessRows(tree);
+      expect(isUnderHostDesktop(rows, 150, 130)).toBe(false);
+      expect(isUnderHostDesktop(rows, 150, 120)).toBe(true);
+      expect(isUnderHostDesktop(rows, 220, 120)).toBe(false);
+    });
   });
 
   it("reads CODEX_HOME from an environment listing when visible", () => {
