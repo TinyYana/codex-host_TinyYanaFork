@@ -93,12 +93,30 @@ export function createDraftPrewarmPolicyBridge(
   let bridgeReadyTimeout: ReturnType<typeof globalThis.setTimeout> | null = null;
   let bridgeInitialization: Promise<void> | null = null;
   let writeTail = Promise.resolve();
+  // Set only when this Host's relay rejected the Windows bridge spawn itself,
+  // i.e. the controlled machine is not Windows. Such a Host can hold no
+  // external Thread: native requests go straight to its stock app-server and
+  // external Harness carriers fail explicitly. Scoped to this policy, so other
+  // Hosts and reconnected managers start undecided.
+  let bridgeUnsupported = false;
 
   const transportError = (message: string, cause?: unknown): Error => {
     const error = new Error(`codexhost Remote Control bridge: ${message}`);
     if (cause !== undefined) Object.assign(error, { cause });
     return error;
   };
+  const unsupportedBridgeError = (): Error =>
+    transportError(
+      `Host ${hostId} is a non-Windows controlled machine. External Harnesses over Remote Control ` +
+        "currently require a Windows controlled machine; native Codex tasks on this Host still work. " +
+        "To use an external Harness on this computer, connect to it over SSH instead.",
+    );
+  const isExternalCarrier = (method: string, parameters: unknown): boolean =>
+    method.startsWith("codexhost/") ||
+    (method === "thread/start" &&
+      isRecord(parameters) &&
+      typeof parameters.model === "string" &&
+      parameters.model.startsWith("codexhost/"));
   const utf8Base64 = (value: string): string => {
     const bytes = new TextEncoder().encode(value);
     let binary = "";
@@ -159,6 +177,23 @@ export function createDraftPrewarmPolicyBridge(
       knownExternalThreadIds.add(value.id);
       knownOfficialThreadIds.delete(value.id);
     }
+  };
+  // A thread/start the stock app-server answered directly created a native
+  // Thread; remembering it spares its turns a bridge ownership lookup.
+  const rememberDirectThread = (value: unknown): void => {
+    if (!isRecord(value) || !isRecord(value.thread) || typeof value.thread.id !== "string") return;
+    rememberExternalThread(value.thread);
+    if (!knownExternalThreadIds.has(value.thread.id)) knownOfficialThreadIds.add(value.thread.id);
+  };
+  const rememberDirectThreadStart = (pending: unknown): void => {
+    if (
+      (typeof pending !== "object" && typeof pending !== "function") ||
+      pending === null ||
+      typeof Reflect.get(pending, "then") !== "function"
+    ) {
+      return;
+    }
+    void Promise.resolve(pending).then(rememberDirectThread, () => undefined);
   };
   const observeBridgeResult = (
     request: { method: string; parameters: unknown } | undefined,
@@ -349,9 +384,12 @@ export function createDraftPrewarmPolicyBridge(
         timeoutMs: null,
       });
       void Promise.resolve(started).catch((error) => {
-        if (bridgeProcessHandle === startedProcessHandle) failBridge(error, false);
+        if (bridgeProcessHandle !== startedProcessHandle) return;
+        if (isUnsupportedPosixBridgeSpawn(error)) bridgeUnsupported = true;
+        failBridge(error, false);
       });
     } catch (error) {
+      if (isUnsupportedPosixBridgeSpawn(error)) bridgeUnsupported = true;
       failBridge(error);
     }
     return bridgeReadyPromise;
@@ -509,14 +547,30 @@ export function createDraftPrewarmPolicyBridge(
       if (threadId) externalPrewarms.delete(threadId);
     }
     const routedParameters = method === "thread/start" ? routeThreadStart(parameters) : parameters;
+    const sendDirect = (): unknown => {
+      const result =
+        options === undefined
+          ? originalSend.call(bridge, method, routedParameters)
+          : originalSend.call(bridge, method, routedParameters, options);
+      if (isRemoteControlHost && method === "thread/start") rememberDirectThreadStart(result);
+      return result;
+    };
+    if (bridgeUnsupported) {
+      return isExternalCarrier(method, routedParameters)
+        ? Promise.reject(unsupportedBridgeError())
+        : sendDirect();
+    }
     const sendBridged = (): Promise<unknown> =>
       initializeBridge().then(
         () => enqueueBridgeRequest(method, routedParameters, options) as Promise<unknown>,
+        (error) => {
+          // The relay refused the bridge spawn before any backend saw this
+          // request, so sending it to the stock app-server once is not a replay.
+          if (!bridgeUnsupported || !isUnsupportedPosixBridgeSpawn(error)) throw error;
+          if (isExternalCarrier(method, routedParameters)) throw unsupportedBridgeError();
+          return sendDirect();
+        },
       );
-    const sendDirect = (): unknown =>
-      options === undefined
-        ? originalSend.call(bridge, method, routedParameters)
-        : originalSend.call(bridge, method, routedParameters, options);
     const unresolvedThreadId = shouldResolveThreadOwnership(method, routedParameters);
     if (unresolvedThreadId) {
       return resolveThreadOwnership(unresolvedThreadId).then(
@@ -528,9 +582,10 @@ export function createDraftPrewarmPolicyBridge(
           // Thread. Keep this narrowly limited to the relay's exact
           // deserialization error and the two native recovery requests; other
           // bridge failures must remain visible so an external Thread is never
-          // silently routed to the stock app-server.
+          // silently routed to the stock app-server. Once this Host is known to
+          // have no bridge it can hold no external Thread, so every Thread is native.
           if (
-            (method === "thread/read" || method === "thread/resume") &&
+            (bridgeUnsupported || method === "thread/read" || method === "thread/resume") &&
             isUnsupportedPosixBridgeSpawn(error)
           ) {
             return Promise.resolve(sendDirect()).then((result) => {
@@ -617,6 +672,7 @@ export function createDraftPrewarmPolicyBridge(
         throw new Error("Renderer draft prewarm was invalidated by a configuration change");
       }
       if (threadId) externalPrewarms.add(threadId);
+      if (!external && isRemoteControlHost) rememberDirectThread(result);
       publishDraftWorkspace(routedParameters);
       return result;
     });

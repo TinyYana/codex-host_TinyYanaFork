@@ -694,6 +694,202 @@ describe("Renderer draft prewarm policy", () => {
     expect(directSend).not.toHaveBeenCalledWith("thread/read", { threadId: "unknown-thread" });
   });
 
+  describe("on a non-Windows Remote Control controlled machine", () => {
+    const posixHostId = "remote-control:posix-host";
+    const posixSpawnError = (): Error =>
+      Object.assign(
+        new Error("Invalid request: AbsolutePathBuf deserialized without a base path"),
+        {
+          code: -32600,
+        },
+      );
+    const spawnCount = (directSend: ReturnType<typeof vi.fn>): number =>
+      directSend.mock.calls.filter(([method]) => method === "process/spawn").length;
+    const installPosixHost = () => {
+      const manager = requestManagerFixture();
+      const { bridge, directSend } = remoteRequestBridgeFixture();
+      directSend.mockImplementation((method: string, parameters: unknown) => {
+        if (method === "process/spawn") return Promise.reject(posixSpawnError());
+        if (method === "thread/start") return Promise.resolve({ thread: { id: "native-new" } });
+        return Promise.resolve({ method, parameters });
+      });
+      const target: DraftPrewarmPolicyTarget = {};
+      installDraftPrewarmPolicyBridge(manager, bridge, posixHostId, target, {
+        discardAllPrewarmedThreads: vi.fn(),
+      });
+      const policy = target.__codexhostDraftPrewarmPolicyV1 as {
+        select(model: string | null): boolean;
+        dispose(): void;
+      };
+      return { manager, bridge, directSend, policy };
+    };
+
+    it("sends native Threads to the stock app-server without retrying the bridge", async () => {
+      const { bridge, directSend } = installPosixHost();
+
+      await expect(
+        bridge.sendRequest("thread/start", { model: "gpt-5", cwd: "/Users/me/project" }),
+      ).resolves.toEqual({ thread: { id: "native-new" } });
+      await bridge.sendRequest("turn/start", { threadId: "native-new", input: [] });
+      expect(spawnCount(directSend)).toBe(0);
+      expect(directSend).toHaveBeenCalledWith("turn/start", { threadId: "native-new", input: [] });
+
+      await expect(
+        bridge.sendRequest("turn/start", { threadId: "native-existing", input: [] }),
+      ).resolves.toEqual({
+        method: "turn/start",
+        parameters: { threadId: "native-existing", input: [] },
+      });
+      expect(spawnCount(directSend)).toBe(1);
+
+      await bridge.sendRequest("turn/start", { threadId: "native-other", input: [] });
+      await bridge.sendRequest("thread/list", {});
+      expect(spawnCount(directSend)).toBe(1);
+      expect(directSend).toHaveBeenCalledWith("turn/start", {
+        threadId: "native-other",
+        input: [],
+      });
+      expect(directSend).toHaveBeenCalledWith("thread/list", {});
+      expect(
+        directSend.mock.calls.filter(
+          ([method, parameters]) =>
+            method === "turn/start" &&
+            (parameters as { threadId: string }).threadId === "native-existing",
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("rejects external Harness carriers explicitly instead of using the stock app-server", async () => {
+      const { bridge, directSend, policy } = installPosixHost();
+      const unsupported = /remote-control:posix-host is a non-Windows controlled machine.*SSH/su;
+
+      await expect(
+        bridge.sendRequest("codexhost/harness/inspect", { harnessId: "claude-code" }),
+      ).rejects.toThrow(unsupported);
+      policy.select("codexhost/claude-code");
+      await expect(
+        bridge.sendRequest("thread/start", { cwd: "/Users/me/project" }),
+      ).rejects.toThrow(unsupported);
+      await expect(
+        bridge.prewarmThreadStart({ cwd: "/Users/me/project" }) as Promise<unknown>,
+      ).rejects.toThrow(unsupported);
+
+      expect(spawnCount(directSend)).toBe(1);
+      expect(directSend).not.toHaveBeenCalledWith("codexhost/harness/inspect", expect.anything());
+      expect(directSend).not.toHaveBeenCalledWith("thread/start", expect.anything());
+    });
+
+    it("does not carry the decision to another Host or a reconnected manager", async () => {
+      const { bridge, directSend, policy } = installPosixHost();
+      await expect(bridge.sendRequest("codexhost/harness/inspect", {})).rejects.toThrow(
+        "non-Windows controlled machine",
+      );
+      policy.dispose();
+
+      for (const hostId of [posixHostId, "remote-control:windows-host"]) {
+        const target: DraftPrewarmPolicyTarget = {};
+        installDraftPrewarmPolicyBridge(requestManagerFixture(), bridge, hostId, target, {
+          discardAllPrewarmedThreads: vi.fn(),
+        });
+        const spawnsBefore = spawnCount(directSend);
+        await expect(bridge.sendRequest("codexhost/harness/inspect", {})).rejects.toThrow(
+          "non-Windows controlled machine",
+        );
+        expect(spawnCount(directSend)).toBe(spawnsBefore + 1);
+        (target.__codexhostDraftPrewarmPolicyV1 as { dispose(): void }).dispose();
+      }
+    });
+
+    it("keeps an unrelated spawn rejection visible and retries the bridge", async () => {
+      const manager = requestManagerFixture();
+      const { bridge, directSend } = remoteRequestBridgeFixture();
+      const unrelated = Object.assign(new Error("Invalid request: missing field `command`"), {
+        code: -32600,
+      });
+      directSend.mockImplementation((method: string) =>
+        method === "process/spawn" ? Promise.reject(unrelated) : Promise.resolve({}),
+      );
+      installDraftPrewarmPolicyBridge(
+        manager,
+        bridge,
+        posixHostId,
+        {},
+        {
+          discardAllPrewarmedThreads: vi.fn(),
+        },
+      );
+
+      await expect(
+        bridge.sendRequest("turn/start", { threadId: "unknown-thread", input: [] }),
+      ).rejects.toThrow("missing field `command`");
+      await expect(bridge.sendRequest("codexhost/harness/inspect", {})).rejects.toThrow(
+        "missing field `command`",
+      );
+      expect(spawnCount(directSend)).toBe(2);
+      expect(directSend).not.toHaveBeenCalledWith("turn/start", expect.anything());
+      expect(directSend).not.toHaveBeenCalledWith("codexhost/harness/inspect", expect.anything());
+    });
+  });
+
+  it("still resolves unknown Thread ownership through a working Windows bridge", async () => {
+    const manager = requestManagerFixture();
+    const { bridge, directSend } = remoteRequestBridgeFixture();
+    directSend.mockImplementation((method: string) =>
+      Promise.resolve(method === "thread/start" ? { thread: { id: "native-windows" } } : {}),
+    );
+    const notifications = remoteNotificationTargetFixture();
+    installDraftPrewarmPolicyBridge(
+      manager,
+      bridge,
+      "remote-control:fixture-host",
+      notifications.target,
+      { discardAllPrewarmedThreads: vi.fn() },
+    );
+
+    await bridge.sendRequest("thread/start", { model: "gpt-5", cwd: "C:\\workspace" });
+    await bridge.sendRequest("turn/start", { threadId: "native-windows", input: [] });
+    expect(directSend).not.toHaveBeenCalledWith("process/spawn", expect.anything());
+
+    const turn = bridge.sendRequest("turn/start", {
+      threadId: "external-windows",
+      input: [],
+    }) as Promise<unknown>;
+    const spawn = directSend.mock.calls.find(([method]) => method === "process/spawn");
+    expect(spawn?.[1]).toMatchObject({ cwd: "C:\\" });
+    const processHandle = (spawn?.[1] as { processHandle: string }).processHandle;
+    emitRemoteBridgeOutput(notifications, processHandle, {
+      method: "codexhost/remote-control-bridge/ready",
+      params: { protocolVersion: 1 },
+    });
+    await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(1));
+    emitRemoteBridgeOutput(notifications, processHandle, {
+      id: writtenBridgeFrames(directSend)[0]?.id,
+      result: {},
+    });
+    await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(3));
+    const ownership = writtenBridgeFrames(directSend)[2];
+    expect(ownership).toMatchObject({
+      method: "codexhost/thread/ownership/list",
+      params: { threadIds: ["external-windows"] },
+    });
+    emitRemoteBridgeOutput(notifications, processHandle, {
+      id: ownership?.id,
+      result: { threads: [{ threadId: "external-windows", owner: "external" }] },
+    });
+    await vi.waitFor(() => expect(writtenBridgeFrames(directSend)).toHaveLength(4));
+    const bridgedTurn = writtenBridgeFrames(directSend)[3];
+    expect(bridgedTurn).toMatchObject({
+      method: "turn/start",
+      params: { threadId: "external-windows" },
+    });
+    emitRemoteBridgeOutput(notifications, processHandle, { id: bridgedTurn?.id, result: {} });
+    await expect(turn).resolves.toEqual({});
+    expect(directSend).not.toHaveBeenCalledWith("turn/start", {
+      threadId: "external-windows",
+      input: [],
+    });
+  });
+
   it("leaves stock Remote Control requests direct and terminates its bridge on dispose", async () => {
     const manager = requestManagerFixture();
     const { bridge, directSend } = remoteRequestBridgeFixture();

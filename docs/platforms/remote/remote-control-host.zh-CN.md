@@ -5,6 +5,7 @@
 ## 前置条件
 
 - 被控机器为 Windows；目前已验证的控制端为 macOS。
+- 被控端不是 Windows 时，原生 Codex 任务仍可通过 Remote Control 使用，但 Harness 不可用，发往该 Host 的 Harness 请求会返回指明其为非 Windows 被控端的错误。要在 Mac 或 Linux 上使用 Harness，请改用 [SSH](remote-ssh-host.zh-CN.md)。
 - 两台电脑安装相同版本的 codexhost，并都通过 codexhost 启动 Codex Desktop。
 - 两端已登录 Remote Control 要求的 ChatGPT 账号，并完成官方配对。
 - 目标 Harness 已在 Windows 上安装并登录。
@@ -22,5 +23,6 @@
 - **`unknown variant codexhost/harness/inspect`**：升级并重启两端 codexhost，再重新连接 Remote Control 环境。
 - **桥接启动失败或 `no active process for process handle`**：确认 Windows 上的 Codex Desktop 是通过 codexhost 启动的，重启被控端后重新连接环境。
 - **Windows 重启后初始化超时**：直接重试刚才的操作。
+- **`Host remote-control:… is a non-Windows controlled machine`**：被控端不是 Windows，其 Remote Control 中继无法启动 codexhost 桥接。原生 Codex 任务不受影响；要在该电脑上使用 Harness，请改用 [SSH](remote-ssh-host.zh-CN.md) 连接。
 - **原生 Codex 可用但看不到 Harness**：在控制端运行连接诊断，再检查 Windows 上 Harness 的安装和登录状态。
 - **`Claude inbound is disabled`**：Windows 上的 codexhost 关闭了 Claude Code 集成，启用后重试。
