@@ -17,42 +17,27 @@ function desktopStore() {
   let allowed = false;
   let hardBlocked = false;
   const auth: Atom = { read: () => ({ authMethod, authenticatedAccountId: "account" }) };
-  const usage: Atom = {
-    read: () => ({
-      data: { rate_limit: { allowed }, credits: { has_credits: false, unlimited: false } },
-    }),
-  };
+  const usage: Atom = { read: () => ({ data: { rate_limit: { allowed } } }) };
   const reserve: Atom = { read: () => ({ active: false, eligible: true, hardBlocked }) };
-  // Desktop resolves a host-parameterized family member before the Jotai getter
-  // sees it, so `get(family, "local")` reaches the selector as one readonly atom.
-  const reserveActiveMembers = new Map<string, Atom>();
-  const reserveActiveFor = (hostId: string): Atom => {
-    const member = reserveActiveMembers.get(hostId) ?? {
-      read: (get) => (get(reserve) as { active: boolean }).active,
-    };
-    reserveActiveMembers.set(hostId, member);
-    return member;
-  };
   const accountGate: Atom = {
     read: (get) => {
       const a = get(auth) as { authMethod: string };
       // Like Desktop: API-key sign-in returns before reading ChatGPT usage.
       if (a.authMethod !== "chatgpt") return false;
-      const { data } = get(usage) as {
-        data: { rate_limit: { allowed: boolean }; credits: Record<string, boolean> };
-      };
-      // Like Desktop: once usage is exhausted without credits, an active
-      // reserve exempts the Composer from this gate.
-      if (data.rate_limit.allowed !== false || data.credits.has_credits || data.credits.unlimited) {
-        return false;
-      }
-      return get(reserveActiveFor("local")) !== true;
+      return (
+        (get(usage) as { data: { rate_limit: { allowed: boolean } } }).data.rate_limit.allowed ===
+        false
+      );
     },
   };
   const reserveGate: Atom = {
     read: (get) => (get(reserve) as { hardBlocked: boolean }).hardBlocked,
   };
-  const reserveActive = reserveActiveFor("local");
+  const reserveActive: Atom = { read: (get) => (get(reserve) as { active: boolean }).active };
+  // Desktop 26.1002: an active reserve exempts the Account gate.
+  const exemptAccountGate: Atom = {
+    read: (get) => accountGate.read(get) === true && get(reserveActive) !== true,
+  };
   const listeners = new Map<Atom, Set<() => void>>();
   const emit = () => {
     // Model Jotai's propagation to derived signal atoms; React's listener
@@ -78,6 +63,7 @@ function desktopStore() {
     accountGate,
     reserveGate,
     reserveActive,
+    exemptAccountGate,
     setAuthMethod(value: string) {
       authMethod = value;
       emit();
@@ -102,20 +88,27 @@ function composerFixture(
     duplicateAccount?: boolean;
     snapshotWrapper?: boolean;
     signalReserve?: boolean;
+    /** Desktop 26.1002: exempting Account gate, also subscribed in a child of the owner. */
+    childAccount?: boolean;
   } = {},
 ) {
+  const accountGate = options.childAccount ? source.exemptAccountGate : source.accountGate;
   const subscribers: Array<{ getSnapshot(): unknown }> = [];
   const instances: Array<{ value: unknown; getSnapshot(): unknown }> = [];
   const hooks: Array<Record<string, unknown>> = [];
   const rerender = vi.fn();
-  for (const selector of [
-    source.reserveActive,
-    source.accountGate,
-    ...(options.omitReserve ? [] : [source.reserveGate]),
-    ...(options.duplicateAccount ? [source.accountGate] : []),
-  ]) {
+  const childHooks: Array<Record<string, unknown>> = [];
+  type SelectorEntry = [Atom, Array<Record<string, unknown>>];
+  const selectors: SelectorEntry[] = [
+    [source.reserveActive, hooks],
+    [accountGate, hooks],
+    ...(options.omitReserve ? [] : ([[source.reserveGate, hooks]] satisfies SelectorEntry[])),
+    ...(options.duplicateAccount ? ([[accountGate, hooks]] satisfies SelectorEntry[]) : []),
+    ...(options.childAccount ? ([[accountGate, childHooks]] satisfies SelectorEntry[]) : []),
+  ];
+  for (const [selector, target] of selectors) {
     // Desktop 26.928 wraps parameterized selectors in a readonly signal atom.
-    const signal = options.signalReserve && selector !== source.accountGate;
+    const signal = options.signalReserve && selector !== accountGate;
     const atom: Atom = signal ? { read: (get) => get(selector) } : selector;
     const value = {
       atom,
@@ -147,7 +140,7 @@ function composerFixture(
           rerender();
         }),
     };
-    hooks.push(
+    target.push(
       { memoizedState: [subscriber, signal ? [value, undefined] : [source.store, atom]] },
       { queue: instance },
       { memoizedState: effect },
@@ -158,9 +151,11 @@ function composerFixture(
   }
   // Desktop owners have more than a thousand hooks; do not rely on positions.
   hooks.unshift(...Array.from({ length: 230 }, () => ({ memoizedState: null })));
-  hooks.forEach((hook, i) => {
-    hook.next = hooks[i + 1] ?? null;
-  });
+  for (const list of [hooks, childHooks]) {
+    list.forEach((hook, i) => {
+      hook.next = list[i + 1] ?? null;
+    });
+  }
   const props = { onLocalSubmitStart() {}, submitDisabled: false };
   // Desktop wraps the owner in a pass-through component with the same props.
   const wrapper = {
@@ -173,7 +168,16 @@ function composerFixture(
     memoizedState: hooks[0] as unknown,
     return: wrapper,
   };
-  const editor = { parentElement: null, __reactFiber$test: owner };
+  // 26.1002 subscribes the Account gate again in a child without owner props.
+  const child = {
+    memoizedProps: { submitDisabled: false, onSubmitLocal() {} },
+    memoizedState: childHooks[0] ?? null,
+    return: owner,
+  };
+  const editor = {
+    parentElement: null,
+    __reactFiber$test: options.childAccount ? child : owner,
+  };
   const composer = {
     isConnected: true,
     querySelector: () => editor,
@@ -187,6 +191,8 @@ function composerFixture(
     subscribers,
     instances,
     hooks,
+    editor,
+    child,
     blocked: () => instances.slice(1).some((instance) => instance.getSnapshot() === true),
   };
 }
@@ -196,6 +202,40 @@ afterEach(() => {
 });
 
 describe("Codex usage gate for external Harness Composers", () => {
+  it("binds 26.1002 exempting Account gates in the owner and its child", () => {
+    const source = desktopStore();
+    const external = composerFixture(source, { childAccount: true });
+    const codex = composerFixture(source, { childAccount: true });
+    expect(inspectComposerCodexUsageGate(external.composer)).toEqual({
+      ownerCount: 1,
+      reserveGateCount: 1,
+      accountGateCount: 2,
+    });
+    const ownerAccount = required(external.instances[1]);
+    const childAccount = required(external.instances[3]);
+    const blocked = () => [ownerAccount, childAccount].some((i) => i.getSnapshot() === true);
+    expect(blocked()).toBe(true);
+    expect(external.gate.update(true)).toBe("bypassed");
+    expect(blocked()).toBe(false);
+    expect(codex.blocked()).toBe(true);
+    expect(source.store.get(source.exemptAccountGate)).toBe(true);
+    expect(source.store.set).not.toHaveBeenCalled();
+    expect(external.gate.update(false)).toBe("native");
+    expect(blocked()).toBe(true);
+  });
+
+  it("keeps a selector reading the reserve hard block with Account usage native", () => {
+    const source = desktopStore();
+    const combined: Atom = {
+      read: (get) => get(source.reserveGate) === true || source.accountGate.read(get) === true,
+    };
+    source.exemptAccountGate.read = combined.read;
+    const f = composerFixture(source, { childAccount: true });
+    expect(f.gate.update(true)).toBe("unsupported");
+    expect(f.blocked()).toBe(true);
+    expect(source.store.set).not.toHaveBeenCalled();
+  });
+
   it("lifts only this Composer's usage gates without touching the shared store", () => {
     const f = composerFixture();
     const { store } = f.source;
@@ -345,6 +385,84 @@ describe("Codex usage gate for external Harness Composers", () => {
     expect(f.blocked()).toBe(false);
   });
 
+  it.each([false, true])(
+    "binds a late child Account gate (snapshotWrapper: %s)",
+    (snapshotWrapper) => {
+      vi.useFakeTimers();
+      const f = composerFixture(undefined, { childAccount: true, snapshotWrapper });
+      const ownerAccount = required(f.instances[1]);
+      const childAccount = required(f.instances[3]);
+      // The child has not mounted its Account subscription yet.
+      const childHooks = f.child.memoizedState;
+      f.child.memoizedState = null;
+      expect(f.gate.update(true)).toBe("bypassed");
+      expect(ownerAccount.getSnapshot()).toBe(false);
+      // React refreshes the owner's lazy snapshot wrapper on its next render.
+      if (snapshotWrapper) {
+        ownerAccount.getSnapshot = () => required(f.subscribers[1]).getSnapshot();
+      }
+      // React mounts a new child fiber that subscribes the Account gate.
+      f.editor.__reactFiber$test = { ...f.child, memoizedState: childHooks };
+      expect(childAccount.getSnapshot()).toBe(true);
+      vi.advanceTimersByTime(1000);
+      expect(f.gate.refresh()).toBe("bypassed");
+      expect(childAccount.getSnapshot()).toBe(false);
+      expect(ownerAccount.getSnapshot()).toBe(false);
+      expect(f.gate.update(false)).toBe("native");
+      expect(childAccount.getSnapshot()).toBe(true);
+      expect(ownerAccount.getSnapshot()).toBe(true);
+    },
+  );
+
+  it.each([false, true])(
+    "binds a late child Account gate in the committed alternate tree (snapshotWrapper: %s)",
+    (snapshotWrapper) => {
+      vi.useFakeTimers();
+      const f = composerFixture(undefined, { childAccount: true, snapshotWrapper });
+      const ownerAccount = required(f.instances[1]);
+      const childAccount = required(f.instances[3]);
+      const childHooks = f.child.memoizedState;
+      f.child.memoizedState = null;
+      const rootState = { current: null as unknown };
+      const previousRoot = { stateNode: rootState, child: f.owner };
+      Object.assign(f.owner, { return: previousRoot, child: f.child });
+      rootState.current = previousRoot;
+      expect(f.gate.update(true)).toBe("bypassed");
+      expect(ownerAccount.getSnapshot()).toBe(false);
+      if (snapshotWrapper) {
+        ownerAccount.getSnapshot = () => required(f.subscribers[1]).getSnapshot();
+      }
+
+      const child = { ...f.child, memoizedState: childHooks, alternate: f.child };
+      const owner = { ...f.owner, child, alternate: f.owner };
+      const currentRoot = { stateNode: rootState, child: owner };
+      Object.assign(f.owner, { alternate: owner });
+      Object.assign(owner, { return: currentRoot });
+      child.return = owner;
+      Object.assign(f.child, { alternate: child });
+      // The DOM retains the old Fiber pointer while React publishes the alternate.
+      rootState.current = currentRoot;
+      expect(childAccount.getSnapshot()).toBe(true);
+      vi.advanceTimersByTime(1000);
+      expect(f.gate.refresh()).toBe("bypassed");
+      expect(childAccount.getSnapshot()).toBe(false);
+      expect(ownerAccount.getSnapshot()).toBe(false);
+      expect(f.gate.update(false)).toBe("native");
+      expect(childAccount.getSnapshot()).toBe(true);
+      expect(ownerAccount.getSnapshot()).toBe(true);
+    },
+  );
+
+  it("restores native gates when the committed submit scope is no longer available", () => {
+    vi.useFakeTimers();
+    const f = composerFixture();
+    expect(f.gate.update(true)).toBe("bypassed");
+    Object.assign(f.editor, { __reactFiber$test: { return: null } });
+    vi.advanceTimersByTime(1000);
+    expect(f.gate.refresh()).toBe("unsupported");
+    expect(f.blocked()).toBe(true);
+  });
+
   it("restores the original wrapper after React refreshes the instance getter", () => {
     const f = composerFixture(undefined, { snapshotWrapper: true, signalReserve: true });
     const instance = required(f.instances[1]);
@@ -450,80 +568,5 @@ describe("Codex usage gate for external Harness Composers", () => {
     Object.defineProperty(f.composer, "isConnected", { value: false });
     expect(f.gate.refresh()).toBe("native");
     expect(f.blocked()).toBe(true);
-  });
-});
-
-describe("Codex usage gate while ChatGPT Codex usage is exhausted", () => {
-  const variants = [{}, { snapshotWrapper: true, signalReserve: true }];
-
-  it("binds both gates on first use although the Account gate reads reserve active", () => {
-    for (const options of variants) {
-      const source = desktopStore();
-      source.setHardBlocked(true);
-      const f = composerFixture(source, options);
-      expect(source.store.get(source.accountGate)).toBe(true);
-      expect(inspectComposerCodexUsageGate(f.composer)).toEqual({
-        ownerCount: 1,
-        reserveGateCount: 1,
-        accountGateCount: 1,
-      });
-      expect(f.gate.update(true)).toBe("bypassed");
-      expect(required(f.instances[1]).getSnapshot()).toBe(false);
-      expect(required(f.instances[2]).getSnapshot()).toBe(false);
-      expect(source.store.get(source.accountGate)).toBe(true);
-      expect(source.store.set).not.toHaveBeenCalled();
-    }
-  });
-
-  it("rebinds after Desktop replaces the Composer hooks during exhaustion", () => {
-    for (const options of variants) {
-      const source = desktopStore();
-      // Bound before usage ran out, then Desktop remounts while exhausted.
-      source.setAllowed(true);
-      const f = composerFixture(source, options);
-      expect(f.gate.update(true)).toBe("bypassed");
-      source.setAllowed(false);
-      const replacement = composerFixture(source, options);
-      f.owner.memoizedState = replacement.owner.memoizedState;
-      expect(replacement.blocked()).toBe(true);
-      expect(f.gate.refresh()).toBe("bypassed");
-      expect(replacement.blocked()).toBe(false);
-      f.gate.dispose();
-      expect(replacement.blocked()).toBe(true);
-    }
-  });
-
-  it("restores native gates on update(false), dispose and Composer removal", () => {
-    const f = composerFixture();
-    expect(f.gate.update(true)).toBe("bypassed");
-    expect(f.gate.update(false)).toBe("native");
-    expect(f.blocked()).toBe(true);
-
-    expect(f.gate.update(true)).toBe("bypassed");
-    f.gate.dispose();
-    expect(f.blocked()).toBe(true);
-    expect(f.gate.refresh()).toBe("native");
-
-    expect(f.gate.update(true)).toBe("bypassed");
-    Object.defineProperty(f.composer, "isConnected", { value: false });
-    expect(f.gate.refresh()).toBe("native");
-    expect(f.blocked()).toBe(true);
-  });
-
-  it("still rejects an Account gate that also reads reserve hardBlocked", () => {
-    for (const options of variants) {
-      const source = desktopStore();
-      const accountRead = source.accountGate.read;
-      const reserveRead = source.reserveGate.read;
-      source.accountGate.read = (get) => {
-        const account = accountRead(get);
-        const reserve = reserveRead(get);
-        return Boolean(account || reserve);
-      };
-      const f = composerFixture(source, options);
-      expect(inspectComposerCodexUsageGate(f.composer).ownerCount).toBe(0);
-      expect(f.gate.update(true)).toBe("unsupported");
-      expect(f.blocked()).toBe(true);
-    }
   });
 });

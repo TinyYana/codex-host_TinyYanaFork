@@ -1,22 +1,8 @@
 # 账号与额度设置
 
-在 codexhost 的「设置 → 账号」查看当前 Codex 身份与额度，以及其他 Harness 的 `inspectAccount()` 快照。CodexHost 可以保存多個 Codex 帳號並在其間安全切換（見下方「Codex 帳號管理」與 [Codex 多帳號、額度 Ranking 與安全切換](codex-managed-accounts.md)）；它不自己做登入/登出，也不消耗重置卡。官方 Desktop 登录与退出仍由官方后端处理。用户可以显式确认，将兼容的本地授权一次性复制到 Pi 的独立 Provider 配置；这是对原先全页只读边界的有限扩展，不建立 Host 凭据库，也不改变原生登录。
+在 codexhost 的「设置 → 账号」查看当前 Codex 身份与额度，以及其他 Harness 的 `inspectAccount()` 快照。CodexHost 不管理多个原生 Codex 登录：不提供添加/登录/切换/退出/删除/恢复，也不消耗重置卡。官方 Desktop 登录与退出仍由官方后端处理。用户可以显式确认，将兼容的本地授权一次性复制到 Pi 的独立 Provider 配置；这是对原先全页只读边界的有限扩展，不建立 Host 凭据库，也不改变原生登录。
 
-`.codexhost-native-accounts` 是已保存帳號的 vault：不存在時 Host 不會建立它，也不做任何 credential 儲存檢查，直到使用者第一次保存帳號；舊版留下的 vault 會在啟動時被讀取，之前保存的帳號會重新出現。
-
-## Codex 帳號管理
-
-管理動作全部由 Host 回報的 `capabilities` 決定；列表沒有 `capabilities`（SSH 遠端、不支援的儲存、舊 Host）時，頁面與唯讀版本完全相同，不顯示任何管理元素。
-
-- **保存目前帳號**：目前登入但尚未保存的帳號顯示「尚未保存」徽章，標題右側提供「保存目前帳號」。新增其他帳號的方式（先用官方登入另一個帳號，再回來保存）放在標題下方的引導浮窗。
-- **切換／刪除**：已保存且不是目前的帳號提供「切換」「刪除」；刪除前需確認，只移除保存的副本。`requiresLogin` 的帳號顯示「需重新登入」、額度顯示「—」、不可切換，改提供「重新登入」直接走官方登入流程。
-- **每個帳號各自的額度**：每列獨立載入自己的 5 小時／7 天額度與重置時間，兩個帳號可以並排比較；查不到就是「—」，不補 0。
-- **進行中狀態**：`phase` 為 `changing`、有 `pendingOperation` 或本地請求進行中時，顯示進行中文案並停用所有動作與額度刷新。「當前」標記只在 Host 回傳的列表通過版本閘之後才移動，不做樂觀更新；成功訊息顯示的是 Host 驗證後的帳號。
-- **錯誤**：依 Host 的封閉類別碼顯示在地化文案（例如有 Turn 進行中、偵測到其他 Codex 行程使用同一個 home），不顯示原始錯誤。
-- **Manual / Auto**：Host 回報 `auto` 時顯示 Auto 開關與策略（best／consume-first／waste-first，各附一行說明）。說明文字寫明 Auto 只換 Codex 帳號、不改 Agent／Model／推理設定，且只在 Turn 之間切換。帳號列以次要文字顯示 Ranker 的結論（例如「建議 · 5 小時 · 剩餘 60%」），理由放在 tooltip；額度未知的帳號顯示「不會被自動選中」。
-- **修復**：切換的 rollback 也失敗時，Host 回報 `recover`，頁面提供「修復」。
-
-Composer 旁的額度浮窗在 Agent 為 Codex 且 Host 可管理帳號時多一個「Codex 帳號」區塊：目前身分、最緊的限制（binding window 與剩餘百分比）、其他已保存帳號的「切換」與 Auto 開關，忙碌或失敗時顯示原因。切換期間停用送出。Turn 因額度撞牆失敗、且有其他合格帳號時，浮窗提供「切換到 X 並重試」：先切換，Host 驗證後才把原輸入放回輸入框，由使用者自己確認送出——沒有任何自動送出的路徑；判斷不確定時只提供手動切換。
+本地 `.codexhost-native-accounts` 文件若仍存在，启动和刷新都不会读取、改写或回收。
 
 ## 账号列表
 
@@ -38,9 +24,9 @@ Composer 旁的額度浮窗在 Agent 為 Codex 且 Host 可管理帳號時多一
 
 ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两道账号级布尔门禁用 Composer 提交：账号额度门和 reserve `hardBlocked`。API Key 登录不经过这两道门。它们是界面上的订阅额度预检，不是协议限制；外部 Harness 的 `turn/start` 由 Host 路由，不会发到官方后端。
 
-因此在单个 Composer 选中外部 Agent、Adapter 就绪且没有 codexhost 自身的提交阻塞时，`renderer-codex-usage-gate.ts` 只把该 Composer 对这两道门的订阅快照投影为 `false`，继续走原生提交链路。不写账号、atom 或额度查询缓存，Codex 额度横幅保持显示；其他 Composer、Codex 路径和空输入、附件、运行中等其他原生限制不受影响。外部 Harness 的真实额度与错误由其自身处理。切回 Codex、Composer 移除或扩展卸载时恢复实时原生结果。
+因此在单个 Composer 选中外部 Agent、Adapter 就绪且没有 codexhost 自身的提交阻塞时，`renderer-codex-usage-gate.ts` 只把该 Composer 对这两道门的订阅快照投影为 `false`，继续走原生提交链路。不写账号、atom 或额度查询缓存；旁路生效期间只隐藏该 Composer 内的 Codex 额度横幅，恢复原生状态时还原其显示样式。其他 Composer、Codex 路径和空输入、附件、运行中等其他原生限制不受影响。外部 Harness 的真实额度与错误由其自身处理。切回 Codex、Composer 移除或扩展卸载时恢复实时原生结果。
 
-门按其 selector 实际读取的字段识别，不依赖压缩名或 hook 序号。兼容直接 `[store, atom]` 订阅及 Desktop 26.928 的 readonly signal adapter / lazy snapshot wrapper：以成对的订阅 effect 和原生快照一致性验证 wrapper，限量重放 readonly 布尔 selector 的依赖以识别间接 reserve 门；拒绝循环依赖、追踪型 render、混合门和快照不匹配。额度耗尽且没有 credits 时，账号额度门会再读取当前 host 的 reserve `active` 作为豁免条件（reserve 生效时账号门不拦截），这不算混合门；同一个 selector 同时读取 reserve `hardBlocked` 与账号门字段时才无法分离。释放时分别恢复 subscriber 与 React instance 原来的 getter，不把 wrapper 替换成另一个函数。无法唯一识别时保留原生限制，并在 Agent 控件悬停提示中说明。升级后的诊断步骤见 [Desktop 更新兼容性诊断手册](../operations/codex-desktop-upgrade-diagnosis-playbook.md#检查-codex-额度门)。
+门按其 selector 实际读取的字段识别，不依赖压缩名或 hook 序号。兼容直接 `[store, atom]` 订阅及 Desktop 26.928 的 readonly signal adapter / lazy snapshot wrapper：以成对的订阅 effect 和原生快照一致性验证 wrapper，限量重放 readonly 布尔 selector 的依赖以识别间接 reserve 门；拒绝循环依赖、追踪型 render、混合门和快照不匹配。Desktop 26.1002 的 Account 门可读取 reserve `active` 作为豁免，并同时由 submit owner 和编辑器到 owner 之间的子组件订阅；这些订阅按组件分别投影。每次重试从 React 当前已提交树重新发现作用域，包括 alternate 切换后才挂载的子组件；无法确认当前作用域时恢复原生限制。释放时分别恢复 subscriber 与 React instance 原来的 getter，不把 wrapper 替换成另一个函数。无法唯一识别时保留原生限制，并在 Agent 控件悬停提示中说明。升级后的诊断步骤见 [Desktop 更新兼容性诊断手册](../operations/codex-desktop-upgrade-diagnosis-playbook.md#检查-codex-额度门)。
 
 ## 其他 Harness 的只读账号额度
 
@@ -76,7 +62,7 @@ ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两�
 
 ## 官方认证
 
-Desktop `account/login/*` 和 `account/logout` 原样交给官方后端。Host 只在使用者明確保存或切換時把 credential 存進 vault，不被動收集新身分；用户确认的导入写入目标 Harness 自己的存储。不替换 loginId，不重建原生结果。官方认证完成后，设置页可更新当前身份与额度展示。
+Desktop `account/login/*` 和 `account/logout` 原样交给官方后端。Host 不建立凭据收藏库；仅用户确认的导入写入目标 Harness 自己的存储。不替换 loginId，不重建原生结果。官方认证完成后，设置页可更新当前身份与额度展示。
 
 SSH 维持远端原生单账号，不传输本地凭据。
 
@@ -84,15 +70,13 @@ SSH 维持远端原生单账号，不传输本地凭据。
 
 用量浮窗不重复展示 5 小时和 7 天额度；额度继续由专属额度入口展示。
 
-选择 Codex 时，用量浮窗只读显示当前 Host 的全局账号身份，而不是 Thread 的历史绑定。切换 Host 后跟随相应 Host 的状态。即使尚无 Token 用量，也可查看当前身份；其他 Harness 不显示 Codex 账号。
+用量浮窗只展示会话用量指标，不显示账号身份；没有可展示的用量数据时隐藏入口。当前 Codex 账号身份可在 Agent 选择入口的悬停提示和设置 → 账号中查看。
 
 ## 实现与验证
 
-- `docs/product/codex-managed-accounts.md`：多帳號保存、切換交易、額度、Ranker、Auto、migration。
-- `openspec/changes/add-codex-managed-accounts/`：現行產品契約（取代 `remove-codex-multi-account`）。
-- `packages/host-runtime/src/account/codex-account-control.ts`：帳號控制面介面與唯讀投影。
-- `packages/renderer-extension/src/settings/codex-account-manage.ts`、`codex-account-messages.ts`：設定頁的管理動作、Auto 控制與錯誤文案。
-- `packages/renderer-extension/src/renderer-codex-account-switch.ts`、`renderer-codex-account-section.ts`、`renderer-codex-turn-failure.ts`：Composer 切換入口與 Switch & Retry。
+- `docs/product/codex-native-account-switching-design.md`：多账号能力已删除后的只读额度边界。
+- `openspec/changes/remove-codex-multi-account/`：删除 Host 多账号管理的产品契约。
+- `packages/host-runtime/src/account/codex-account-control.ts`：当前官方身份的只读投影。
 - `packages/host-runtime/src/native-account-host.ts`：本地当前身份读取。
 - `packages/host-runtime/src/native-account-observer.ts`：原生认证后更新显示身份，不收藏凭据。
 - `packages/renderer-extension/src/settings/accounts-page.ts`：身份、额度与导入入口挂载。
