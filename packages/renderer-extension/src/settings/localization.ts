@@ -206,6 +206,7 @@ export interface RendererSettingsMessages {
   readonly harnessVersionCurrent: string;
   readonly harnessVersionLatest: string;
   readonly harnessVersionChecking: string;
+  readonly harnessVersionAvailable: string;
   readonly harnessVersionUpdate: string;
   readonly harnessVersionUpdating: string;
   readonly harnessVersionUpToDate: string;
@@ -488,6 +489,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   harnessVersionCurrent: "Current version",
   harnessVersionLatest: "Latest version",
   harnessVersionChecking: "Checking versions…",
+  harnessVersionAvailable: "Update available",
   harnessVersionUpdate: "Update",
   harnessVersionUpdating: "Updating…",
   harnessVersionUpToDate: "Up to date",
@@ -785,6 +787,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   harnessVersionCurrent: "当前版本",
   harnessVersionLatest: "最新版本",
   harnessVersionChecking: "正在检查版本…",
+  harnessVersionAvailable: "有新版本",
   harnessVersionUpdate: "更新",
   harnessVersionUpdating: "正在更新…",
   harnessVersionUpToDate: "已是最新",
