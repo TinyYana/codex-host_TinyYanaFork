@@ -13,9 +13,6 @@ import {
   type RuntimeStatus,
 } from "@codexhost/shared-contracts";
 import {
-  HARNESS_INSTALLATION_METHOD,
-  harnessInstallationParamsSchema,
-  harnessInstallationStateSchema,
   type HarnessInstallationParams,
   type HarnessInstallationState,
   HARNESS_DISPLAY_GET_METHOD,
@@ -123,6 +120,7 @@ import {
   type UpdateStartResult,
   type UpdateStatusResult,
 } from "@codexhost/shared-contracts";
+import { runRendererInstallation } from "./renderer-installation-client.js";
 
 import {
   createRendererRequestSender,
@@ -421,13 +419,7 @@ export function createRendererModelClient(
 
   return Object.freeze({
     async installation(input: HarnessInstallationParams): Promise<HarnessInstallationState> {
-      return harnessInstallationStateSchema.parse(
-        await manager.sendRequest(
-          HARNESS_INSTALLATION_METHOD,
-          harnessInstallationParamsSchema.parse(input),
-          { priority: "interactive" },
-        ),
-      );
+      return runRendererInstallation(manager.sendRequest, input);
     },
     async getHarnessDisplaySettings() {
       return harnessDisplaySettingsSchema.parse(
