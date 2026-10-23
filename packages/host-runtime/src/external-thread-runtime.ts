@@ -79,6 +79,7 @@ export interface ExternalThread {
   usageTurnId: HostTurnId | null;
   projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector }>;
   responseGates: Map<HostTurnId, TurnProjectionGate>;
+  pendingSteerProjections: Set<Promise<void>>;
   ephemeralTurnIds: Set<HostTurnId>;
   persistenceError: Error | null;
   ignoredInteractionIds: Set<HostInteractionId>;
@@ -87,6 +88,11 @@ export interface ExternalThread {
   goalLoaded: boolean;
   /** Native Session faulted or closed; idle Threads should restore instead of reuse. */
   sessionUnavailable: boolean;
+  /**
+   * Turns that took native steered input since Desktop last read this Thread's history. Desktop
+   * still shows each as one Turn, while native history may have split it at the steered input.
+   */
+  steeredTurnIds: Set<HostTurnId>;
 }
 
 export type ExternalThreadLocation =
@@ -220,6 +226,7 @@ export class ExternalThreadRuntime {
   readonly #repository: ExternalThreadRepository;
   readonly #lifecycle = new ExternalThreadLifecycle();
   readonly #hasRunningDescendants: (threadId: string) => boolean;
+  readonly #steeredTurnIds = new Map<string, Set<HostTurnId>>();
   readonly #subagentRunning: (threadId: string) => boolean;
   readonly #threads = new Map<string, ExternalThread>();
 
@@ -247,7 +254,8 @@ export class ExternalThreadRuntime {
     this.idleRelease = new ExternalThreadIdleRelease({
       threads: () => this.values(),
       get: (id) => this.get(id),
-      remove: (id) => this.remove(id),
+      // Idle release detaches only the Native Session. Host Thread state survives restoration.
+      remove: (id) => this.#detach(id),
       queue: input.idleRelease?.queue ?? new DesktopRequestQueue(),
       canRelease: (thread) =>
         !thread.sessionUnavailable &&
@@ -262,16 +270,24 @@ export class ExternalThreadRuntime {
     return this.#threads.get(threadId);
   }
 
+  #detach(threadId: string): void {
+    const thread = this.#threads.get(threadId);
+    this.#threads.delete(threadId);
+    if (!thread || thread.steeredTurnIds.size === 0) this.#steeredTurnIds.delete(threadId);
+  }
+
   values(): ExternalThread[] {
     return [...this.#threads.values()];
   }
 
   remove(threadId: string): void {
     this.#threads.delete(threadId);
+    this.#steeredTurnIds.delete(threadId);
   }
 
   clear(): void {
     this.#threads.clear();
+    this.#steeredTurnIds.clear();
   }
 
   drain(): Promise<void> {
@@ -360,6 +376,11 @@ export class ExternalThreadRuntime {
     // live status lives in the Host, not in the stored record, so seed it here
     // instead of publishing a Thread that claims to be idle.
     const running = this.#subagentRunning(input.record.hostThreadId);
+    let steeredTurnIds = this.#steeredTurnIds.get(input.record.hostThreadId);
+    if (!steeredTurnIds) {
+      steeredTurnIds = new Set();
+      this.#steeredTurnIds.set(input.record.hostThreadId, steeredTurnIds);
+    }
     const externalThread: ExternalThread = {
       id: input.record.hostThreadId,
       cwd: input.record.cwd,
@@ -390,6 +411,7 @@ export class ExternalThreadRuntime {
       usageTurnId: null,
       projectedTurns: new Map(),
       responseGates: new Map(),
+      pendingSteerProjections: new Set(),
       ephemeralTurnIds: new Set(),
       persistenceError: null,
       projectedTerminalTurnId: null,
@@ -397,6 +419,7 @@ export class ExternalThreadRuntime {
       goal: null,
       goalLoaded: false,
       sessionUnavailable: false,
+      steeredTurnIds,
     };
     this.idleRelease.touch(externalThread);
     externalThread.outputTask = this.#consumeOutputs(externalThread);
@@ -476,13 +499,13 @@ export class ExternalThreadRuntime {
       const retire = async () => {
         if (this.#threads.get(parentId) !== parent || this.#threads.get(child.id) !== child) return;
         if (bestEffort) {
-          this.#threads.delete(child.id);
+          this.remove(child.id);
           await child.session.close();
           await child.outputTask;
         } else {
           child.sessionUnavailable = true;
           await this.#lifecycle.release(child.id, child.session, child.outputTask);
-          if (this.#threads.get(child.id) === child) this.#threads.delete(child.id);
+          if (this.#threads.get(child.id) === child) this.remove(child.id);
         }
       };
       if (bestEffort) await retire().catch(this.#diagnose);
