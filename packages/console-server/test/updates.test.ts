@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -53,6 +53,13 @@ async function npmLayout(platform: NodeJS.Platform = process.platform) {
     CODEXHOST_NPM_PACKAGE_ROOT: packageRoot,
   };
   return { target, environment };
+}
+
+/** The handoff poller reads the status file concurrently; replace it atomically so it never sees a truncated write. */
+async function replaceStatus(statusPath: string, status: unknown): Promise<void> {
+  const nextPath = `${statusPath}.next`;
+  await writeFile(nextPath, JSON.stringify(status));
+  await rename(nextPath, statusPath);
 }
 
 describe("console updates", () => {
@@ -168,10 +175,7 @@ describe("console updates", () => {
     if (!call) throw new Error("Updater was not spawned");
     const spawnedRequest = JSON.parse(await readFile(call[1], "utf8"));
     const status = JSON.parse(await readFile(spawnedRequest.status_path, "utf8"));
-    await writeFile(
-      spawnedRequest.status_path,
-      JSON.stringify({ ...status, phase: "waiting-for-exit" }),
-    );
+    await replaceStatus(spawnedRequest.status_path, { ...status, phase: "waiting-for-exit" });
     const result = await starting;
 
     expect(result.status.phase).toBe("waiting-for-exit");
@@ -215,7 +219,7 @@ describe("console updates", () => {
     if (!call) throw new Error("Updater was not spawned");
     const request = JSON.parse(await readFile(call[1], "utf8"));
     const status = JSON.parse(await readFile(request.status_path, "utf8"));
-    await writeFile(request.status_path, JSON.stringify({ ...status, phase: "waiting-for-exit" }));
+    await replaceStatus(request.status_path, { ...status, phase: "waiting-for-exit" });
     await expect(retry).resolves.toMatchObject({ status: { phase: "waiting-for-exit" } });
     await expect(updates.status()).resolves.toMatchObject({
       status: { phase: "waiting-for-exit", error: null },
