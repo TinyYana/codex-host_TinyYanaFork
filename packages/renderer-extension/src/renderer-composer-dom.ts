@@ -55,6 +55,7 @@ import {
   mountRendererHarnessCommandControl,
   type RendererHarnessCommandControl,
 } from "./renderer-harness-command-control.js";
+import { observeRendererCompactComposer } from "./renderer-trigger-chip-style.js";
 
 export { CONTROL_ATTRIBUTE };
 export type ExternalModelControlView = RendererModelControlView;
@@ -104,6 +105,7 @@ export interface ComposerAgentControl {
   harnessCommands: RendererHarnessCommandControl;
   sendButton: HTMLButtonElement;
   sendDisabledBeforeSwitch: boolean | null;
+  stopCompactLayout?: () => void;
 }
 
 export function eventElement(target: EventTarget | null): Element | null {
@@ -720,7 +722,7 @@ export function mountComposerAgentControl(
   }
 
   if (!toolbar) composer.append(modelPicker.root, picker.root);
-  const control = {
+  const control: ComposerAgentControl = {
     composer,
     composerId,
     root: picker.root,
@@ -766,10 +768,11 @@ export function mountComposerAgentControl(
     harnessCommands,
     sendButton,
     sendDisabledBeforeSwitch: null,
-  } satisfies ComposerAgentControl;
+  };
   refreshTrailingClusterPlacement(control);
   refreshUsagePlacement(control);
   refreshCreditsPlacement(control);
+  control.stopCompactLayout = observeRendererCompactComposer(composer);
   return control;
 }
 
@@ -890,6 +893,7 @@ export function renderComposerAgentControl(
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {
+  control.stopCompactLayout?.();
   if (control.sendDisabledBeforeSwitch !== null) {
     control.sendButton.disabled = nativeSendDisabled(
       control.sendButton,
