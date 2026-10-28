@@ -119,7 +119,7 @@
 | [`product/codex-managed-accounts.md`](product/codex-managed-accounts.md) | Codex 多帳號保存、受控切換交易、統一額度、Quota Ranker、Auto 與 Switch & Retry、migration；修改帳號管理、切換或額度 Ranking 時閱讀。 |
 | [`product/codex-native-account-switching-design.md`](product/codex-native-account-switching-design.md) | Codex 帳號切換的設計邊界與歷史脈絡；修改 Codex 認證或帳號路由時閱讀。 |
 | [`architecture/renderer-settings-styling.md`](architecture/renderer-settings-styling.md) | 设置页 Tailwind CSS 使用边界、构建方式与编写规则；新增或改版设置页界面时阅读。 |
-| [`operations/codex-desktop-upgrade-diagnosis-playbook.md`](operations/codex-desktop-upgrade-diagnosis-playbook.md) | Desktop 更新后 Renderer、Bridge、Agent 和 Model 异常，以及输入性能的诊断流程；兼容性与交互性能回归时阅读。 |
+| [`operations/codex-desktop-upgrade-diagnosis-playbook.md`](operations/codex-desktop-upgrade-diagnosis-playbook.md) | Desktop 更新后 Renderer、Bridge、Agent、Model、语言设置异常及输入性能的诊断流程；兼容性与交互性能回归时阅读。 |
 
 ## 平台、进程与远程运行
 
