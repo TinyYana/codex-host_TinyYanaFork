@@ -702,7 +702,7 @@ export function createDefaultRendererSettingsPages(
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
   getAccountClient: () => RendererCodexAccountClient | null = () => null,
-  getSessionImportClient: () => RendererSessionImportClient | null = () => null,
+  getSessionImportClient: (hostId?: string) => RendererSessionImportClient | null = () => null,
   openImportedThread: RendererImportedThreadOpener | null = () =>
     Promise.reject(new Error("Imported Thread navigation is unavailable")),
   getLoadedSessionsClient: () => LoadedSessionsClient | null = () => null,
@@ -738,7 +738,7 @@ export function createDefaultRendererSettingsRegistry(
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
   getAccountClient: () => RendererCodexAccountClient | null = () => null,
-  getSessionImportClient: () => RendererSessionImportClient | null = () => null,
+  getSessionImportClient: (hostId?: string) => RendererSessionImportClient | null = () => null,
   openImportedThread?: RendererImportedThreadOpener,
   requestUsageStatistics?: RendererUsageStatisticsRequest,
   usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,

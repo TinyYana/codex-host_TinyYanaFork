@@ -21,7 +21,8 @@
 | [`architecture/harness-plugin-architecture.md`](architecture/harness-plugin-architecture.md) | 插件化目标架构与未完成迁移方案；规划后续解耦时阅读，接口示例不代表当前 API。 |
 | [`architecture/harness-command-integration.md`](architecture/harness-command-integration.md) | Harness 原生命令的 Adapter、Host、Renderer 边界；新增命令能力时阅读。 |
 | [`architecture/harness-executable-discovery.md`](architecture/harness-executable-discovery.md) | Harness CLI 的跨平台发现、连接页安装指引和 DSH 特殊连接范围；修改安装指引、发现或启动逻辑时阅读。 |
-| [`architecture/harness-session-import.md`](architecture/harness-session-import.md) | Claude Code、Pi、Hermes、DSH 与 Cursor ACP 本地会话导入契约和恢复边界；扩展导入能力时阅读。 |
+| [`architecture/harness-session-import.md`](architecture/harness-session-import.md) | 原生会话的本地/远程 Host 导入契约、Broker 转发和恢复边界；扩展导入能力时阅读。 |
+| [`architecture/harness-questions.md`](architecture/harness-questions.md) | 外部 Harness 多选提问卡片、原生单选分流、回答归属与生命周期；修改提问交互时阅读。 |
 | [`architecture/external-thread-steering.md`](architecture/external-thread-steering.md) | 外部 Thread 按 Session 能力选择原生同轮插入或停止后重发；修改 steering 时阅读。 |
 | [`architecture/delegation-titles.md`](architecture/delegation-titles.md) | 委派子会话标题、子任务显示名、创建快照与重试边界。 |
 | [`architecture/thread-watch.md`](architecture/thread-watch.md) | 一次性 Thread 停下通知（`thread watch`）的模型、结果、送达与边界；修改委派跟进或通知时阅读。 |
@@ -95,6 +96,7 @@
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`harnesses/grok/subagent-status-and-model.md`](harnesses/grok/subagent-status-and-model.md) | Grok Subagent 状态、Model、Transcript 与 Desktop 投影；修改 Grok Subagent 时阅读。 |
+| [`harnesses/grok/questions.md`](harnesses/grok/questions.md) | Grok 原生单选、多选和自由输入的 ACP 接线、答案回传、撤回与验证边界。 |
 | [`harnesses/grok/permission-modes.md`](harnesses/grok/permission-modes.md) | Grok 会话内权限切换、原生生效确认、失败处理与验证范围。 |
 
 ### Copilot

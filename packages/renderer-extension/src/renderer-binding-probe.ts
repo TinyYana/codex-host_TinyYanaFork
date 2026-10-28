@@ -1,4 +1,5 @@
 import { createRemoteConnectionsControl } from "./remote-connections-control.js";
+import { installRendererQuestions } from "./renderer-questions.js";
 import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js";
 import { handleRemoteConnectionsRequest } from "./remote-connections-request.js";
 import {
@@ -35,6 +36,7 @@ import {
   EDITOR_SELECTOR,
   composerForEditor,
   composerForElement,
+  composerButtonsWithin,
   disposeComposerAgentControl,
   refreshSendButton,
   editorForElement,
@@ -49,6 +51,10 @@ import {
   type ExternalModelControlView,
   type ExternalPermissionModeControlView,
 } from "./renderer-composer-dom.js";
+import {
+  hasNativeComposerRequest,
+  NATIVE_COMPOSER_REQUEST_ATTRIBUTES,
+} from "./renderer-composer-request.js";
 import {
   rendererHarnessMessages,
   rendererLiveCommandsPendingNotice,
@@ -681,10 +687,21 @@ export function mutationMayAffectComposer(mutation: MutationRecord): boolean {
     mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
   if (!target) return true;
   // Identity changes are lifecycle events even after the marker is removed.
-  if (mutation.type === "attributes" && mutation.attributeName === "data-codex-composer-root")
+  if (
+    mutation.type === "attributes" &&
+    (mutation.attributeName === "data-codex-composer-root" ||
+      NATIVE_COMPOSER_REQUEST_ATTRIBUTES.some((attribute) => attribute === mutation.attributeName))
+  )
     return true;
-  // Text/IME and rich-text changes inside an editor do not change its owner.
-  if (mutation.type !== "attributes" && editorForElement(target)) return false;
+  // Ignore ordinary typing, but not native request surfaces replacing rich-text content.
+  if (mutation.type !== "attributes" && editorForElement(target)) {
+    return (
+      mutation.type === "childList" &&
+      [...mutation.addedNodes, ...mutation.removedNodes].some(
+        (node) => node instanceof Element && hasNativeComposerRequest(node),
+      )
+    );
+  }
   if (target.closest(CODEX_COMPOSER_SELECTOR)) return true;
   if (mutation.type === "characterData") return false;
   if (
@@ -854,20 +871,23 @@ export function installRendererBindingProbe(
     getLoadedSessionsClient: () => modelClientForHost("local"),
     requestUsageStatistics: usageStatistics.request,
     usageStatisticsHosts: usageStatistics.hosts,
-    getSessionImportClient: () => {
-      const client = modelClientForHost("local");
+    getSessionImportClient: (requestedHostId) => {
+      const hostId = requestedHostId ?? activeModelHostId();
+      if (!hostId) return null;
+      const client = modelClientForHost(hostId);
       const sources = client?.listSessionImportSources;
       const list = client?.listHarnessSessions;
       const importSession = client?.importHarnessSession;
       if (!sources || !list || !importSession) return null;
       return {
+        hostId,
         listSessionImportSources: () => sources(),
         listHarnessSessions: (input) => list(input),
         importHarnessSession: (input) => importSession(input),
       };
     },
-    openImportedThread: (threadId, signal) =>
-      openRendererThread(threadId, { hostId: "local", signal }),
+    openImportedThread: (threadId, signal, hostId) =>
+      openRendererThread(threadId, { hostId: hostId ?? "local", signal }),
     onLocaleChange() {
       for (const mounted of mountedByComposer.values()) renderMounted(mounted);
     },
@@ -1002,6 +1022,7 @@ export function installRendererBindingProbe(
   const isMountedComposer = (composer: Element): boolean =>
     composer.isConnected &&
     composer.matches(CODEX_COMPOSER_SELECTOR) &&
+    !hasNativeComposerRequest(composer) &&
     orbitComposerKind(composer) === "codex" &&
     mountedByComposer.has(composer);
 
@@ -2764,12 +2785,13 @@ export function installRendererBindingProbe(
     if (
       mountedByComposer.has(composer) ||
       !composer.isConnected ||
+      hasNativeComposerRequest(composer) ||
       orbitComposerKind(composer) !== "codex" ||
       !composer.matches(CODEX_COMPOSER_SELECTOR)
     ) {
       return;
     }
-    const allButtons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
+    const allButtons = composerButtonsWithin(composer);
     const sendButton = sendButtonWithin(composer) ?? allButtons.at(-1) ?? null;
     if (!sendButton) return;
     const modelTarget = findComposerModelTarget(composer);
@@ -2883,6 +2905,7 @@ export function installRendererBindingProbe(
       const replacementTarget = findComposerModelTarget(target);
       const replacementHostId = activeModelHostId(target);
       if (
+        hasNativeComposerRequest(target) ||
         orbitComposerKind(target) !== "codex" ||
         !shouldTransferComposerState(
           replacement.sourceModelTarget,
@@ -2905,6 +2928,7 @@ export function installRendererBindingProbe(
       const kind = orbitComposerKind(composer);
       if (
         !composer.isConnected ||
+        hasNativeComposerRequest(composer) ||
         kind === "orbit" ||
         !composer.matches(CODEX_COMPOSER_SELECTOR) ||
         !mounted.control.root.isConnected
@@ -2974,6 +2998,7 @@ export function installRendererBindingProbe(
       void refreshHarnessAvailability();
     }
     pendingReplacements.clear();
+    questions.refreshContext();
   };
 
   const scheduleScan = (refreshTargets = false): void => {
@@ -3189,7 +3214,12 @@ export function installRendererBindingProbe(
   };
   mutationObserver.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ["hidden", "aria-hidden", "data-codex-composer-root"],
+    attributeFilter: [
+      "hidden",
+      "aria-hidden",
+      "data-codex-composer-root",
+      ...NATIVE_COMPOSER_REQUEST_ATTRIBUTES,
+    ],
     characterData: true,
     childList: true,
     subtree: true,
@@ -3311,6 +3341,25 @@ export function installRendererBindingProbe(
       (mounted) => isMountedComposer(mounted.composer) && mounted.control.root.isConnected,
     );
 
+  const questions = installRendererQuestions(window, () => {
+    const visible = connectedComposers().filter(
+      (mounted) =>
+        mounted.composer.getClientRects().length > 0 &&
+        window.getComputedStyle(mounted.composer).visibility === "visible" &&
+        !mounted.composer.closest('[hidden], [inert], [aria-hidden="true"]') &&
+        controller.get(mounted.composer).agent !== "codex",
+    );
+    const mounted = visible.length === 1 ? visible[0] : undefined;
+    const threadId = mounted
+      ? threadIdFromComposerModelTarget(findComposerModelTarget(mounted.composer))
+      : null;
+    const hostId = mounted?.hostId;
+    const route = hostId ? window.__codexhostHostRoutingV1?.forHost(hostId) : null;
+    return mounted && threadId && hostId && route
+      ? { hostId, threadId, composer: mounted.composer, route: route.manager }
+      : null;
+  });
+
   const api: RendererBindingProbeApi = {
     remoteConnections: (request) => handleRemoteConnectionsRequest(remoteConnections, request),
     currentThreadId() {
@@ -3417,6 +3466,7 @@ export function installRendererBindingProbe(
     dispose() {
       if (disposed) return;
       disposed = true;
+      questions.dispose();
       usageNotificationDispose();
       adapterDispose?.();
       adapterDispose = null;
