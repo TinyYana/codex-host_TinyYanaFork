@@ -89,6 +89,7 @@ async function liveSession() {
     getSessionInfo: async () => ({ cwd: "/synthetic" }),
     readSessionMessages: async () => [],
     readSubagentMessages: async () => [],
+    readGoalRecords: async () => [],
     createTransport: (input) =>
       new ClaudeSdkTransport({
         ...input,
