@@ -29,7 +29,7 @@ use std::sync::{OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use active_update::start_pending_update;
 use active_update::update_waiting_for_launcher_exit;
 #[cfg(target_os = "windows")]
@@ -61,8 +61,6 @@ use runtime_instance::{
     remove_matching_descriptor,
 };
 use startup_record::StartupOutcome;
-#[cfg(target_os = "macos")]
-use system_proxy_environment::launcher_proxy_environment;
 
 const HOST_NODE_PATH_ENV: &str = "CODEXHOST_HOST_NODE_PATH";
 const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
@@ -859,8 +857,12 @@ fn supervise_desktop(
     };
     startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
+    let mut started_update_request = None;
     loop {
-        if should_stop_desktop_for_update(false) {
+        if let Err(error) = start_pending_update(&mut started_update_request) {
+            eprintln!("codexhost launcher: pending update could not be started: {error}");
+        }
+        if should_stop_desktop_for_update(started_update_request.is_some()) {
             if let Err(error) = stop_managed_desktop_for_update(&mut desktop, &mut controller) {
                 eprintln!(
                     "codexhost launcher: managed Desktop could not be stopped for update: {error}"
@@ -955,6 +957,12 @@ fn desktop_environment(
     environment.extend(desktop_path_overrides::forwarded(env::vars_os()));
     #[cfg(target_os = "linux")]
     environment.extend(linux_wayland_runtime_environment(env::vars_os()));
+    #[cfg(target_os = "windows")]
+    for name in ["PATH", "PATHEXT"] {
+        if let Some(value) = env::var_os(name) {
+            environment.push((OsString::from(name), value));
+        }
+    }
     environment
 }
 
@@ -1152,10 +1160,10 @@ fn launch(
                 env::var_os(REMOTE_SSH_MANAGED_ENV),
             ),
         );
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         let environment = {
             let mut environment = environment;
-            environment.extend(launcher_proxy_environment());
+            environment.extend(codexhost_platform::proxy_environment());
             environment
         };
         let result = supervise_desktop(
@@ -1840,6 +1848,29 @@ mod tests {
             OsString::from("CODEXHOST_DATA_DIR"),
             OsString::from("/home/codex/.codexhost"),
         )));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn desktop_environment_forwards_windows_command_search_variables() {
+        let environment = desktop_environment(
+            &resolved_options(),
+            &runtime_control(),
+            Path::new(r"C:\\codexhost.exe"),
+            Path::new(r"C:\\runtime\\desktop-runtime-v1.json"),
+            None,
+        );
+
+        for name in ["PATH", "PATHEXT"] {
+            assert_eq!(
+                environment
+                    .iter()
+                    .find(|(candidate, _)| candidate == name)
+                    .map(|(_, value)| value),
+                std::env::var_os(name).as_ref(),
+                "{name} must reach the AppX-launched Host Runtime"
+            );
+        }
     }
 
     #[test]

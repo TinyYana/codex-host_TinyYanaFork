@@ -24,6 +24,7 @@
 | [`architecture/harness-session-import.md`](architecture/harness-session-import.md) | 原生会话的本地/远程 Host 导入契约、Broker 转发和恢复边界；扩展导入能力时阅读。 |
 | [`architecture/harness-questions.md`](architecture/harness-questions.md) | 外部 Harness 多选提问卡片、原生单选分流、回答归属与生命周期；修改提问交互时阅读。 |
 | [`architecture/external-thread-steering.md`](architecture/external-thread-steering.md) | 外部 Thread 按 Session 能力选择原生同轮插入或停止后重发；修改 steering 时阅读。 |
+| [`architecture/external-thread-queue.md`](architecture/external-thread-queue.md) | 外部 Thread 跟进消息的 Host 原生 `thread/queue/*`、自动推进与中断暂停；修改排队或 Turn 启动时阅读。 |
 | [`architecture/delegation-titles.md`](architecture/delegation-titles.md) | 委派子会话标题、子任务显示名、创建快照与重试边界。 |
 | [`architecture/thread-watch.md`](architecture/thread-watch.md) | 一次性 Thread 停下通知（`thread watch`）的模型、结果、送达与边界；修改委派跟进或通知时阅读。 |
 | [`architecture/official-traffic-ownership.md`](architecture/official-traffic-ownership.md) | Host 只截获自身流量、其余原样转发官方的归属判别与例外；修改请求路由或参数校验时阅读。 |
@@ -111,17 +112,25 @@
 | --- | --- |
 | [`harnesses/zcode/zcode-harness-integration.md`](harnesses/zcode/zcode-harness-integration.md) | 直连已装 ZCode Desktop 的 Agent CLI、Start Plan／个人 Coding Plan 账号接入、自定义 Provider、常驻验证页与验证边界；安装或维护 ZCode Adapter 时阅读。 |
 
+### Qwen Code
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/qwen/qwen-code-harness-integration.md`](harnesses/qwen/qwen-code-harness-integration.md) | 官方 `@qwen-code/sdk` 的 Query 生命周期、模型与权限模式、交互投影、Transcript 恢复及当前能力边界；维护 Qwen Code Adapter 时阅读。 |
+
 ## 账号与 Desktop 产品接入
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
+| [`product/multi-agent-delegation.md`](product/multi-agent-delegation.md) | 输入框 `#` 委派、跨会话引用与完成通知的使用介绍和截图；介绍多 Agent 协作用法时阅读。 |
+| [`product/harness-schedules.md`](product/harness-schedules.md) | 设置侧栏直达官方任务页，原生弹窗选择 Harness 与可选本地工作区，会话侧栏显示归属图标；复用 Desktop 本地固定聊天调度。 |
 | [`product/codex-accounts.md`](product/codex-accounts.md) | 设置页中的原生账号与额度布局、外部 Harness 不受 Codex 额度门限制、手动导入 Pi 及导入记录管理；修改账号 UI、发送额度门、查询或凭证导入链路时阅读。 |
 | [`product/usage-metering.md`](product/usage-metering.md) | 外部 Harness 与官方 Codex 的会话用量、插件可选能力、实时刷新、费用、缓存命中、首字延迟及速度限制；修改计量、价格表或 `pricing.json` 时阅读。 |
 | [`product/usage-statistics.md`](product/usage-statistics.md) | 控制台与 Desktop 内置设置的全局用量统计：独立 Codex 统计插件、各 Harness 原生会话去重、按模型 ID 读时计价与缓存；新增读取器或修改统计口径时阅读。 |
 | [`product/codex-managed-accounts.md`](product/codex-managed-accounts.md) | Codex 多帳號保存、受控切換交易、統一額度、Quota Ranker、Auto 與 Switch & Retry、migration；修改帳號管理、切換或額度 Ranking 時閱讀。 |
 | [`product/codex-native-account-switching-design.md`](product/codex-native-account-switching-design.md) | Codex 帳號切換的設計邊界與歷史脈絡；修改 Codex 認證或帳號路由時閱讀。 |
 | [`architecture/renderer-settings-styling.md`](architecture/renderer-settings-styling.md) | 设置页 Tailwind CSS 使用边界、构建方式与编写规则；新增或改版设置页界面时阅读。 |
-| [`operations/codex-desktop-upgrade-diagnosis-playbook.md`](operations/codex-desktop-upgrade-diagnosis-playbook.md) | Desktop 更新后 Renderer、Bridge、Agent、Model、语言设置异常及输入性能的诊断流程；兼容性与交互性能回归时阅读。 |
+| [`operations/codex-desktop-upgrade-diagnosis-playbook.md`](operations/codex-desktop-upgrade-diagnosis-playbook.md) | Desktop 更新后 Renderer、Bridge、Agent、Model、语言设置异常及输入性能的诊断流程，含 26.1027 主进程 Manager 路由；兼容性与交互性能回归时阅读。 |
 
 ## 平台、进程与远程运行
 
