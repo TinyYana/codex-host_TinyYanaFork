@@ -255,7 +255,6 @@ export interface RendererSettingsMessages {
   readonly updateLatestVersion: string;
   readonly updateUpToDate: string;
   readonly updateAvailable: string;
-  readonly updateWindowsManualRequired: string;
   readonly updateAndRestart: string;
   readonly updateChecking: string;
   readonly updateDownloading: string;
@@ -270,7 +269,6 @@ export interface RendererSettingsMessages {
   readonly updateFailed: string;
   readonly updateRetry: string;
   readonly updateManualNpmDescription: string;
-  readonly updateWindowsNpmDescription: string;
   readonly updateWindowsInstallerDescription: string;
   readonly updateManualTitle: string;
   readonly updateManualFallbackDescription: string;
@@ -481,7 +479,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "No saved override. Uses environment configuration, then automatic discovery.",
   launchPathSaving: "Saving…",
   launchPathLoading: "Loading launch settings…",
-  launchPathLoadError: "Could not load launch settings. Reopen this detail panel to retry.",
+  launchPathLoadError:
+    "Could not load launch settings. Save an installation directory or reset to automatic discovery to replace them.",
   launchPathSaveError:
     "Could not save. Enter an existing absolute installation folder on this Host and check configuration permissions.",
   connectionOfficialWebsite: "Visit official website",
@@ -550,8 +549,6 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateLatestVersion: "Latest version",
   updateUpToDate: "You are up to date.",
   updateAvailable: "A new version is available.",
-  updateWindowsManualRequired:
-    "Automatic updates are unavailable on Windows. Update manually below.",
   updateAndRestart: "Update",
   updateChecking: "Checking for updates...",
   updateDownloading: "Downloading update...",
@@ -568,10 +565,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateFailed: "Update failed.",
   updateRetry: "Retry",
   updateManualNpmDescription: "To update manually, quit codexhost and run this command:",
-  updateWindowsNpmDescription:
-    "Automatic updates are unavailable on Windows. Quit codexhost and run this command in a terminal:",
   updateWindowsInstallerDescription:
-    "Automatic updates are unavailable on Windows. Download and run the installer for this system.",
+    "To update manually, download and run the installer for this system.",
   updateManualTitle: "Manual update",
   updateManualFallbackDescription:
     "The automatic update did not complete. Run this command in a terminal instead, then quit Codex and relaunch it with codexhost.",
@@ -788,7 +783,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathAutomatic: "未设置自定义路径，使用环境变量配置或自动发现。",
   launchPathSaving: "正在保存…",
   launchPathLoading: "正在读取启动设置…",
-  launchPathLoadError: "无法读取启动设置，请重新打开此详情面板重试。",
+  launchPathLoadError: "无法读取启动设置。保存安装目录或恢复自动发现即可替换。",
   launchPathSaveError: "保存失败。请填写此 Host 上实际存在的安装目录绝对路径，并确认配置目录可写。",
   connectionOfficialWebsite: "访问官网",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
@@ -852,7 +847,6 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateLatestVersion: "最新版本",
   updateUpToDate: "当前已是最新版本。",
   updateAvailable: "有新版本可用。",
-  updateWindowsManualRequired: "Windows 暂不支持自动更新，请在下方手动更新。",
   updateAndRestart: "更新",
   updateChecking: "正在检查更新...",
   updateDownloading: "正在下载更新...",
@@ -868,10 +862,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateRetry: "重试",
   updateManualNpmDescription:
     "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",
-  updateWindowsNpmDescription:
-    "Windows 暂不支持自动更新。请退出 codexhost，在终端运行以下命令完成更新。",
-  updateWindowsInstallerDescription:
-    "Windows 暂不支持自动更新。请下载并运行适用于当前系统的安装包。",
+  updateWindowsInstallerDescription: "如需手动更新，请下载并运行适用于当前系统的安装包。",
   updateManualTitle: "手动更新",
   updateManualFallbackDescription:
     "自动更新未能完成，请改用下列命令在终端手动更新。完成后请退出 Codex 并通过 codexhost 重新启动。",
