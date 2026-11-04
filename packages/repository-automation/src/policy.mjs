@@ -4,7 +4,7 @@ export const CI_WORKFLOW = "ci.yml";
 export const RELEASE_CI_EVENTS = new Set(["push", "workflow_dispatch"]);
 export const CI_JOBS = [
   "Check ubuntu-22.04",
-  "Check macos-15",
+  "Check macos-26",
   "Check windows-latest",
   "Check Linux ARM64",
 ];
