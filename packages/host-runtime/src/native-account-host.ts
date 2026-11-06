@@ -95,9 +95,6 @@ export async function prepareLocalCodex(input: {
       return currentCodexAccountFromOfficialRead(response.result);
     },
   });
-  void accounts.refresh().catch(() => {
-    input.diagnosticOutput.write("codexhost: Codex Account identity could not be read\n");
-  });
   return {
     officialRuntimeScope: scope,
     accountControl: accounts,
