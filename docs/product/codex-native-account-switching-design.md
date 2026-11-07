@@ -12,3 +12,5 @@ CodexHost 以「單一正式 `CODEX_HOME`、單一自有官方 backend、多份�
 - 目前帳號永遠由 `auth.json` 推導，不持久化 selector；UI 只在官方 `account/read` 驗證新身分之後才更新。
 
 行為、交易步驟、額度、Ranker、Auto 與 migration 見 [Codex 多帳號、額度 Ranking 與安全切換](codex-managed-accounts.md)；設定頁版面見 [帳號與額度設定](codex-accounts.md)。
+
+Host 准备阶段只初始化原生身份读取连接，不主动预取账号；Desktop 接入已就绪的原生后端时，账号观察器只记录后端代次，不在 `initialize` 响应后额外读取账号或收集凭据，避免干扰官方认证与项目侧栏的初始化顺序。真实账号变更、登录完成和后端代次变化仍按原生事件处理（含凭据收集）。
