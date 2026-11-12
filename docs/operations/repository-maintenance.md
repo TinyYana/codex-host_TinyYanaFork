@@ -122,7 +122,7 @@ TinyYana/codex-host_TinyYanaFork 是持續跟進 upstream 的 downstream fork：
 `.github/workflows/upstream-sync.yml` 每日（及手動）執行，只用一般 merge commit 保留 fork 歷史，不 rebase、不 force-push：
 
 - `main` 已包含 `BytePioneer-AI/codex-host` 的 `main`，且目前版本已有 fork tag：只寫 Summary，不產生 commit、tag 或 Release。
-- 有新進度：在 `main` 上 `merge --no-ff upstream/main`。遇到常規可判定衝突時先自動解決（版本檔取較高版本，固定 allowlist 的 release/renderer 檔取 upstream），再跑 fork 契約與 `npm run check`；全部通過才以一般 push 前進 `main`。期間 `main` 被人推進時 push 會被拒，下次再跑。
+- 有新進度：在 `main` 上 `merge --no-ff upstream/main`，再跑 fork 契約與 `npm run check`；全部通過才以一般 push 前進 `main`。期間 `main` 被人推進時 push 會被拒，下次再跑。
 - `main` 的版本還沒有 fork tag：建立 annotated tag `v<version>`，對 `main` dispatch `ci.yml` 與 `Release packages`（`skip_npm=true`）。`GITHUB_TOKEN` 的 push 不觸發任何 workflow，所以發布的 CI 證據接受 `main` 上 `workflow_dispatch` 的 CI（`RELEASE_CI_EVENTS`），Release 會等它完成才打包。
 - 有衝突時先走常規自動解法，不需人工判斷的才會自動繼續：版本檔（`package.json`、`package-lock.json`、`Cargo.toml`、`Cargo.lock`）取較高版本；固定 allowlist 的 release/renderer 衝突檔（`packages/renderer-extension/src/renderer-binding-probe.ts`、`packages/renderer-extension/src/renderer-model-client.ts`、`packages/renderer-extension/test/renderer-model-client.test.ts`、`scripts/release/prepare-npm.mjs`、`scripts/release/prepare-payload.mjs`、`tests/release/npm-package.test.mjs`、`tests/release/payload.test.mjs`）取 upstream 版本。
 - 需要判斷的情況一律失敗並留下證據，不推送：衝突超出上述常規範圍、上游修改了 `.github/workflows`（workflow token 不能推送這類變更，Summary 給出本地合併指令）、檢查失敗。人工或 agent 在本地合併並推送後，下一次執行會自動發布。倉庫沒有已授權的 Claude Code GitHub automation，workflow 不會自動修衝突或 CI。
