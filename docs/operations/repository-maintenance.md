@@ -122,9 +122,10 @@ TinyYana/codex-host_TinyYanaFork 是持續跟進 upstream 的 downstream fork：
 `.github/workflows/upstream-sync.yml` 每日（及手動）執行，只用一般 merge commit 保留 fork 歷史，不 rebase、不 force-push：
 
 - `main` 已包含 `BytePioneer-AI/codex-host` 的 `main`，且目前版本已有 fork tag：只寫 Summary，不產生 commit、tag 或 Release。
-- 有新進度：在 `main` 上 `merge --no-ff upstream/main`。只有 `package.json`、`package-lock.json`、`Cargo.toml`、`Cargo.lock` 衝突時（雙方各自準備版本），取版本較高的一方。接著跑 fork 契約與 `npm run check`，全部通過才以一般 push 前進 `main`；期間 `main` 被人推進時 push 會被拒，下次再跑。
+- 有新進度：在 `main` 上 `merge --no-ff upstream/main`，再跑 fork 契約與 `npm run check`；全部通過才以一般 push 前進 `main`。期間 `main` 被人推進時 push 會被拒，下次再跑。
 - `main` 的版本還沒有 fork tag：建立 annotated tag `v<version>`，對 `main` dispatch `ci.yml` 與 `Release packages`（`skip_npm=true`）。`GITHUB_TOKEN` 的 push 不觸發任何 workflow，所以發布的 CI 證據接受 `main` 上 `workflow_dispatch` 的 CI（`RELEASE_CI_EVENTS`），Release 會等它完成才打包。
-- 需要判斷的情況一律失敗並留下證據，不推送：非版本檔衝突（Summary 列出衝突檔，附 `upstream-sync-conflict` artifact：衝突檔清單、`git status`、含衝突標記的 diff、待合入 commits）、上游修改了 `.github/workflows`（workflow token 不能推送這類變更，Summary 給出本地合併指令）、檢查失敗。人工或 agent 在本地合併並推送後，下一次執行會自動發布。倉庫沒有已授權的 Claude Code GitHub automation，workflow 不會自動修衝突或 CI。
+- 有衝突時先走常規自動解法，不需人工判斷的才會自動繼續：版本檔（`package.json`、`package-lock.json`、`Cargo.toml`、`Cargo.lock`）取較高版本；固定 allowlist 的 release/renderer 衝突檔（`packages/renderer-extension/src/renderer-binding-probe.ts`、`packages/renderer-extension/src/renderer-model-client.ts`、`packages/renderer-extension/test/renderer-model-client.test.ts`、`scripts/release/prepare-npm.mjs`、`scripts/release/prepare-payload.mjs`、`tests/release/npm-package.test.mjs`、`tests/release/payload.test.mjs`）取 upstream 版本。
+- 需要判斷的情況一律失敗並留下證據，不推送：衝突超出上述常規範圍、上游修改了 `.github/workflows`（workflow token 不能推送這類變更，Summary 給出本地合併指令）、檢查失敗。人工或 agent 在本地合併並推送後，下一次執行會自動發布。倉庫沒有已授權的 Claude Code GitHub automation，workflow 不會自動修衝突或 CI。
 
 Fork 自有能力的保護寫在 `packages/repository-automation/test/fork-contract.test.mjs`：Codex managed/multi-account、Claude Goal bridge 與 fork-only 更新來源的原始碼、Host／Renderer 接線點與專屬測試檔必須仍存在（Vitest 以 glob 探索測試，被 merge 刪掉的測試檔不會讓套件失敗，所以由契約檢查它們），行為由列出的測試驗證。新增 fork 自有能力時同步更新該清單。
 

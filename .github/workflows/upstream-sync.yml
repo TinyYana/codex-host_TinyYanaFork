@@ -9,8 +9,9 @@ name: Upstream sync
 #   `npm run check`, then fast-forwards main (never force).
 # - main's version has no fork Release yet: tags it, dispatches CI on main and
 #   the Release workflow (installers only; npm belongs to upstream).
-# - Anything needing judgment (non-version conflicts, upstream workflow edits
-#   the token cannot push, failed checks) fails with evidence instead.
+# - Anything needing judgment (conflicts outside the routine allowlist,
+#   upstream workflow edits the token cannot push, failed checks) fails with
+#   evidence instead.
 on:
   schedule:
     - cron: "23 2 * * *"
@@ -68,15 +69,28 @@ jobs:
           message="merge: sync upstream ${UPSTREAM_REPOSITORY} main (${UPSTREAM_SHA:0:8})"
           if ! git merge --no-ff --no-edit -m "${message}" upstream/main; then
             conflicted="$(git diff --name-only --diff-filter=U)"
-            # Release preparation conflicts are the routine case: keep the higher version.
-            if [ -n "${conflicted}" ] && ! grep -qvxE 'package\.json|package-lock\.json|Cargo\.toml|Cargo\.lock' <<< "${conflicted}"; then
+            # Routine conflicts stay deterministic:
+            # - version files keep the higher semver side
+            # - a small release/renderer allowlist keeps upstream side
+            routine_conflicts='package\.json|package-lock\.json|Cargo\.toml|Cargo\.lock|packages/renderer-extension/src/renderer-binding-probe\.ts|packages/renderer-extension/src/renderer-model-client\.ts|packages/renderer-extension/test/renderer-model-client\.test\.ts|scripts/release/prepare-npm\.mjs|scripts/release/prepare-payload\.mjs|tests/release/npm-package\.test\.mjs|tests/release/payload\.test\.mjs'
+            if [ -n "${conflicted}" ] && ! grep -qvxE "${routine_conflicts}" <<< "${conflicted}"; then
               ours="$(git show HEAD:package.json | jq -r .version)"
               theirs="$(git show upstream/main:package.json | jq -r .version)"
-              if [ "$(printf '%s\n%s\n' "${ours}" "${theirs}" | sort -V | tail -n1)" = "${ours}" ]; then side=ours; else side=theirs; fi
-              git checkout "--${side}" -- ${conflicted}
-              git add -- ${conflicted}
+              if [ "$(printf '%s\n%s\n' "${ours}" "${theirs}" | sort -V | tail -n1)" = "${ours}" ]; then version_side=ours; else version_side=theirs; fi
+              mapfile -t conflicted_files <<< "${conflicted}"
+              for conflicted_file in "${conflicted_files[@]}"; do
+                case "${conflicted_file}" in
+                  package.json|package-lock.json|Cargo.toml|Cargo.lock)
+                    git checkout "--${version_side}" -- "${conflicted_file}"
+                    ;;
+                  *)
+                    git checkout --theirs -- "${conflicted_file}"
+                    ;;
+                esac
+              done
+              git add -- "${conflicted_files[@]}"
               git commit --no-edit -m "${message}"
-              echo "Resolved version-only conflicts with the ${side} side (${ours} vs ${theirs})." >> "$GITHUB_STEP_SUMMARY"
+              echo "Resolved routine upstream conflicts (version files: ${version_side}; release/renderer allowlist: upstream)." >> "$GITHUB_STEP_SUMMARY"
             else
               # Leave evidence an agent or maintainer can resolve from; never push a conflicted tree.
               mkdir -p sync-evidence
